@@ -1,24 +1,35 @@
 const http = require('http');
 const https = require('https');
+const dns = require('dns');
 const fs = require('fs');
 const path = require('path');
 const url = require('url');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
 
+if (dns && typeof dns.setDefaultResultOrder === 'function') {
+  dns.setDefaultResultOrder('ipv4first');
+}
+
 let ytdlInstance = null;
 try {
   const { Ytdl } = require('@distube/ytdl-core');
   ytdlInstance = new Ytdl();
-  console.log('[FastResolver] In-memory @distube/ytdl-core engine initialized successfully.');
-} catch (e) {
-  console.warn('[FastResolver] In-memory @distube/ytdl-core not available:', e.message);
-}
+} catch (_) {}
 
 const streamCache = new Map(); // key -> { url, expireAt }
 const inflightResolutions = new Map();
+const inflightFullResolutions = new Map();
+const idMapCache = new Map(); // query/id -> youtubeVideoId
+
+function normalizeTrackKey(str) {
+  if (!str || typeof str !== 'string') return '';
+  return str.toLowerCase().replace(/[\(\[\{].*?[\)\]\}]/g, '').replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
+}
 
 const STREAM_CACHE_FILE = path.join(__dirname, 'data', 'stream_cache.json');
+const ID_MAP_CACHE_FILE = path.join(__dirname, 'data', 'resolved_ids.json');
+
 function loadStreamCacheFromDisk() {
   try {
     if (fs.existsSync(STREAM_CACHE_FILE)) {
@@ -35,6 +46,24 @@ function loadStreamCacheFromDisk() {
     }
   } catch (e) {
     console.warn('[StreamCache] Error restoring cache:', e.message);
+  }
+}
+
+function loadIdMapCacheFromDisk() {
+  try {
+    if (fs.existsSync(ID_MAP_CACHE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(ID_MAP_CACHE_FILE, 'utf8'));
+      let count = 0;
+      for (const [k, v] of Object.entries(data)) {
+        if (v && typeof v === 'string') {
+          idMapCache.set(k, v);
+          count++;
+        }
+      }
+      console.log(`[IdMapCache] Restored ${count} pre-resolved YouTube IDs from disk.`);
+    }
+  } catch (e) {
+    console.warn('[IdMapCache] Error restoring cache:', e.message);
   }
 }
 
@@ -55,10 +84,29 @@ function saveStreamCacheToDisk() {
     } catch (_) {}
   }, 3000);
 }
-loadStreamCacheFromDisk();
 
-const keepAliveHttpsAgent = new https.Agent({ keepAlive: true, maxSockets: 64, timeout: 60000 });
-const keepAliveHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 64, timeout: 60000 });
+let saveIdMapTimer = null;
+function saveIdCacheToDisk() {
+  if (saveIdMapTimer) return;
+  saveIdMapTimer = setTimeout(() => {
+    saveIdMapTimer = null;
+    try {
+      const dataDir = path.join(__dirname, 'data');
+      if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+      const obj = {};
+      for (const [k, v] of idMapCache.entries()) {
+        obj[k] = v;
+      }
+      fs.writeFileSync(ID_MAP_CACHE_FILE, JSON.stringify(obj), 'utf8');
+    } catch (_) {}
+  }, 2000);
+}
+
+loadStreamCacheFromDisk();
+loadIdMapCacheFromDisk();
+
+const keepAliveHttpsAgent = new https.Agent({ keepAlive: true, maxSockets: 128, maxFreeSockets: 64, timeout: 60000 });
+const keepAliveHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 128, maxFreeSockets: 64, timeout: 60000 });
 
 let serverScClientId = 'qLcgHhXgeEFFaSolTB9I71LBsqncsD93';
 let serverScClientIdTs = Date.now();
@@ -170,100 +218,509 @@ async function fetchDirectSoundCloudStream(scUrlOrId, queryFallback) {
   return null;
 }
 
-function resolveAudioStream(target, platform = '', queryFallback = '', forceRefresh = false) {
-  if (!target || typeof target !== 'string') {
-    return Promise.reject(new Error('Invalid target for audio stream'));
-  }
-  const cleanTarget = target.trim();
+/**
+ * In-process YouTube iOS Innertube Stream Resolver
+ * Client: IOS (20.10.4) on iPhone16,2.
+ * Resolves direct unencrypted, unthrottled audio streams (itag 140 AAC 128kbps / itag 251 Opus 160kbps)
+ * in ~200-350ms without spawning yt-dlp child processes.
+ */
+function fetchYouTubeInnertubeStream(videoId, preferredQuality = '') {
+  return new Promise((resolve, reject) => {
+    if (!videoId || typeof videoId !== 'string' || !/^[\w-]{11}$/.test(videoId.trim())) {
+      return reject(new Error(`Invalid YouTube videoId: ${videoId}`));
+    }
+    const cleanId = videoId.trim();
 
-  if (platform === 'soundcloud' || cleanTarget.includes('soundcloud.com') || /^\d{6,}$/.test(cleanTarget)) {
-    return fetchDirectSoundCloudStream(cleanTarget, queryFallback).then(url => {
-      if (url) return url;
-      throw new Error('SoundCloud stream could not be resolved');
+    const payload = JSON.stringify({
+      context: {
+        client: {
+          clientName: 'IOS',
+          clientVersion: '20.10.4',
+          deviceMake: 'Apple',
+          deviceModel: 'iPhone16,2',
+          userAgent: 'com.google.ios.youtube/20.10.4',
+          osName: 'iOS',
+          osVersion: '18.3.2.22D82',
+          hl: 'en',
+          gl: 'US'
+        }
+      },
+      videoId: cleanId
+    });
+
+    const req = https.request('https://www.youtube.com/youtubei/v1/player', {
+      method: 'POST',
+      agent: keepAliveHttpsAgent,
+      family: 4,
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+        'User-Agent': 'com.google.ios.youtube/20.10.4',
+        'X-YouTube-Client-Name': '5',
+        'X-YouTube-Client-Version': '20.10.4'
+      },
+      timeout: 8000
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        try {
+          if (res.statusCode >= 400) {
+            return reject(new Error(`Innertube API returned HTTP ${res.statusCode}`));
+          }
+          const json = JSON.parse(data);
+          const playability = json?.playabilityStatus;
+          if (playability && playability.status && playability.status !== 'OK') {
+            return reject(new Error(`Innertube unplayable: ${playability.status} (${playability.reason || 'restricted'})`));
+          }
+
+          const formats = json?.streamingData?.adaptiveFormats;
+          if (!Array.isArray(formats) || formats.length === 0) {
+            return reject(new Error('Innertube response missing adaptiveFormats'));
+          }
+
+          const audioFormats = formats.filter(f => f && f.url && f.mimeType && f.mimeType.startsWith('audio/'));
+          if (audioFormats.length === 0) {
+            return reject(new Error('No direct unencrypted audio formats found in Innertube response'));
+          }
+
+          const qStr = String(preferredQuality || '').toLowerCase();
+          let selected = null;
+          if (qStr === 'opus' || qStr === '251') {
+            selected = audioFormats.find(f => f.itag === 251) || audioFormats.find(f => f.itag === 140);
+          } else if (qStr === 'aac' || qStr === '140') {
+            selected = audioFormats.find(f => f.itag === 140) || audioFormats.find(f => f.itag === 251);
+          } else {
+            // Default: itag 140 (AAC 128kbps in MP4) for universal browser/WebView2 compatibility
+            selected = audioFormats.find(f => f.itag === 140) || audioFormats.find(f => f.itag === 251);
+          }
+
+          if (!selected) {
+            audioFormats.sort((a, b) => (b.bitrate || b.audioBitrate || 0) - (a.bitrate || a.audioBitrate || 0));
+            selected = audioFormats[0];
+          }
+
+          resolve({
+            url: selected.url,
+            itag: selected.itag,
+            mimeType: selected.mimeType,
+            bitrate: selected.bitrate || selected.audioBitrate,
+            contentLength: selected.contentLength,
+            duration: json?.videoDetails?.lengthSeconds ? parseInt(json.videoDetails.lengthSeconds, 10) : undefined
+          });
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error('Innertube request timed out'));
+    });
+    req.write(payload);
+    req.end();
+  });
+}
+
+/**
+ * Background / Full Stream Resolver via yt-dlp
+ * Uses tvhtml5 player client for fast resolution (~3.5s) of un-chunk-locked signed streams
+ * that support continuous, unthrottled streaming across all byte ranges (full track duration).
+ */
+function resolveFullStreamViaYtDlp(targetId, cleanTarget = '', isUrl = false) {
+  const cacheKey = targetId || cleanTarget;
+  if (!cacheKey) return Promise.reject(new Error('Missing target for full stream resolution'));
+
+  if (inflightFullResolutions.has(cacheKey)) {
+    return inflightFullResolutions.get(cacheKey);
+  }
+
+  const cached = streamCache.get(cacheKey);
+  if (cached && cached.fullUrl && cached.expireAt > Date.now()) {
+    return Promise.resolve({
+      url: cached.fullUrl,
+      itag: cached.itag || 140,
+      mimeType: cached.mimeType || 'audio/mp4',
+      isFull: true
     });
   }
 
-  const isId = /^[\w-]{11}$/.test(cleanTarget);
-  const targetId = isId ? cleanTarget : (extractYouTubeId(cleanTarget) || null);
+  const promise = (async () => {
+    const fallbackTarget = targetId ? `https://www.youtube.com/watch?v=${targetId}` : (isUrl || cleanTarget.startsWith('ytsearch') ? cleanTarget : `ytsearch1:${cleanTarget}`);
+    const ytdlpArgs = ['--extractor-args', 'youtube:player_client=tvhtml5', '-g', '-f', '140/ba/b', fallbackTarget];
+
+    let streamUrl = null;
+
+    // 1. Attempt local yt-dlp first (standard on Debian VPS)
+    try {
+      streamUrl = await new Promise((resolveYt, rejectYt) => {
+        execFile('yt-dlp', ytdlpArgs, { timeout: 20000 }, (err, stdout) => {
+          if (!err && stdout && stdout.trim().startsWith('https://')) {
+            return resolveYt(stdout.trim().split('\n')[0]);
+          }
+          execFile('yt-dlp', ['--js-runtimes', 'node', '-g', '-f', '140/ba/b', fallbackTarget], { timeout: 25000 }, (fErr, fOut) => {
+            if (!fErr && fOut && fOut.trim().startsWith('https://')) {
+              return resolveYt(fOut.trim().split('\n')[0]);
+            }
+            rejectYt(fErr || err || new Error('yt-dlp extraction failed'));
+          });
+        });
+      });
+    } catch (localYtErr) {
+      // 2. Fallback to production VPS endpoint if local yt-dlp is missing (e.g. Windows development / test suite)
+      if (targetId && !isUrl) {
+        try {
+          const vpsApiUrl = `https://app.raserapp.online/api/stream?id=${encodeURIComponent(targetId)}&format=json`;
+          streamUrl = await new Promise((resolveVps, rejectVps) => {
+            const vpsReq = https.get(vpsApiUrl, { timeout: 10000, headers: { 'User-Agent': 'RaserLocalDev/1.0' } }, (vpsRes) => {
+              let body = '';
+              vpsRes.on('data', chunk => body += chunk);
+              vpsRes.on('end', () => {
+                try {
+                  const data = JSON.parse(body);
+                  if (data && data.success && data.rawStreamUrl) {
+                    return resolveVps(data.rawStreamUrl);
+                  }
+                  rejectVps(new Error('VPS returned no rawStreamUrl'));
+                } catch (e) {
+                  rejectVps(e);
+                }
+              });
+            });
+            vpsReq.on('error', rejectVps);
+          });
+        } catch (_) {}
+      }
+
+      // 3. Fallback to fast in-process Innertube stream
+      if (!streamUrl && targetId) {
+        try {
+          const fastInfo = await fetchYouTubeInnertubeStream(targetId);
+          if (fastInfo && fastInfo.url) {
+            streamUrl = fastInfo.url;
+          }
+        } catch (_) {}
+      }
+    }
+
+    if (streamUrl) {
+      const resObj = { url: streamUrl, itag: 140, mimeType: 'audio/mp4', isFull: true };
+      const existing = streamCache.get(cacheKey) || {};
+      streamCache.set(cacheKey, {
+        ...existing,
+        fullUrl: streamUrl,
+        url: streamUrl,
+        expireAt: Date.now() + 18000000,
+        itag: 140,
+        mimeType: 'audio/mp4'
+      });
+      if (targetId && cacheKey !== targetId) {
+        streamCache.set(targetId, streamCache.get(cacheKey));
+      }
+      saveStreamCacheToDisk();
+      return resObj;
+    }
+
+    throw new Error('No full stream found');
+  })().finally(() => {
+    inflightFullResolutions.delete(cacheKey);
+  });
+
+  inflightFullResolutions.set(cacheKey, promise);
+  return promise;
+}
+
+/**
+ * Resolves full audio stream details (URL, itag, mimeType, contentLength).
+ * Dual-tier streaming architecture:
+ * 1. Fast Tier: In-process YouTube iOS Innertube resolver (~200-300ms) provides instant playback burst (bytes 0-1048575).
+ * 2. Full Tier: Background yt-dlp tvhtml5 resolver (~3.5s) provides un-chunk-locked signed stream for subsequent ranges & full length.
+ */
+async function resolveAudioStreamDetails(target, platform = '', queryFallback = '', forceRefresh = false, preferredQuality = '', rangeStart = 0) {
+  if (!target || typeof target !== 'string') {
+    throw new Error('Invalid target for audio stream');
+  }
+  const cleanTarget = target.trim();
+
+  // SoundCloud handling
+  if (platform === 'soundcloud' || cleanTarget.includes('soundcloud.com') || /^\d{6,}$/.test(cleanTarget)) {
+    const scUrl = await fetchDirectSoundCloudStream(cleanTarget, queryFallback);
+    if (scUrl) {
+      return {
+        url: scUrl,
+        itag: null,
+        mimeType: scUrl.includes('.m3u8') ? 'application/x-mpegURL' : 'audio/mpeg',
+        isHls: scUrl.includes('.m3u8')
+      };
+    }
+    throw new Error('SoundCloud stream could not be resolved');
+  }
+
+  // Extract or search for YouTube Video ID
+  const isDirectId = /^[a-zA-Z0-9_-]{11}$/.test(cleanTarget) && !/^(cand_|dz_|it_|sp_|ym_)/i.test(cleanTarget);
+  let targetId = isDirectId ? cleanTarget : (extractYouTubeId(cleanTarget) || null);
+
+  // If no targetId, resolve search query in-process via searchYouTubeMusic
+  if (!targetId) {
+    let searchQuery = '';
+    if (cleanTarget.startsWith('ytsearch')) {
+      searchQuery = cleanTarget.replace(/^ytsearch\d*:/i, '').trim();
+    } else if (queryFallback && queryFallback.trim()) {
+      searchQuery = queryFallback.trim();
+    } else if (!cleanTarget.startsWith('http://') && !cleanTarget.startsWith('https://')) {
+      searchQuery = cleanTarget.replace(/^(cand_|dz_|it_|sp_|ym_)/i, '').trim();
+    }
+
+    if (cleanTarget && idMapCache.has(cleanTarget)) {
+      targetId = idMapCache.get(cleanTarget);
+    }
+
+    if (!targetId && searchQuery) {
+      const norm = normalizeTrackKey(searchQuery);
+      if (norm && idMapCache.has(norm)) {
+        targetId = idMapCache.get(norm);
+      }
+      if (!targetId) {
+        try {
+          const searchResults = await searchYouTubeMusic(searchQuery);
+          if (Array.isArray(searchResults) && searchResults.length > 0 && searchResults[0].id) {
+            targetId = searchResults[0].id;
+            if (norm) idMapCache.set(norm, targetId);
+            if (cleanTarget) idMapCache.set(cleanTarget, targetId);
+            saveIdCacheToDisk();
+          }
+        } catch (sErr) {
+          console.warn('[FastResolver] In-process searchYouTubeMusic note:', sErr.message);
+        }
+      }
+    }
+  }
+
   const isUrl = cleanTarget.startsWith('http://') || cleanTarget.startsWith('https://');
-  const targetUrl = targetId ? `https://www.youtube.com/watch?v=${targetId}` : (isUrl || cleanTarget.startsWith('ytsearch') ? cleanTarget : `ytsearch1:${cleanTarget}`);
   const cacheKey = targetId || cleanTarget;
+  const isSubsequentRange = typeof rangeStart === 'number' && rangeStart >= 1048576;
 
   if (forceRefresh) {
     streamCache.delete(cacheKey);
     inflightResolutions.delete(cacheKey);
+    inflightFullResolutions.delete(cacheKey);
   } else {
     const cached = streamCache.get(cacheKey);
     if (cached && cached.expireAt > Date.now()) {
-      return Promise.resolve(cached.url);
-    }
-
-    if (inflightResolutions.has(cacheKey)) {
-      return inflightResolutions.get(cacheKey);
-    }
-  }
-
-  const promise = (async () => {
-    // 1. Fast Path: In-memory Node.js Ytdl engine (Ultra-fast ~1s, 0% CPU spike)
-    if (ytdlInstance && targetId) {
-      try {
-        const info = await ytdlInstance.getInfo(targetId);
-        if (info && Array.isArray(info.formats)) {
-          const audioFormats = info.formats.filter(f => f.mimeType && f.mimeType.startsWith('audio/') && f.url);
-          if (audioFormats.length > 0) {
-            audioFormats.sort((a, b) => (b.audioBitrate || b.bitrate || 0) - (a.audioBitrate || a.bitrate || 0));
-            const best = audioFormats[0];
-            const streamUrl = best.url;
-            streamCache.set(cacheKey, { url: streamUrl, expireAt: Date.now() + 18000000 }); // 5 hours
-            saveStreamCacheToDisk();
-            return streamUrl;
-          }
-        }
-      } catch (yErr) {
-        console.warn('[FastResolver] In-memory ytdl note:', yErr.message, '- falling back to yt-dlp');
+      if (!isSubsequentRange || cached.fullUrl) {
+        const chosenUrl = (isSubsequentRange || !cached.fastUrl) ? (cached.fullUrl || cached.url) : (cached.fastUrl || cached.url);
+        return {
+          url: chosenUrl,
+          itag: cached.itag || 140,
+          mimeType: cached.mimeType || 'audio/mp4',
+          contentLength: cached.contentLength,
+          isFull: !!cached.fullUrl,
+          resolvedId: targetId || (isDirectId ? cleanTarget : (cached.resolvedId || null))
+        };
       }
     }
 
-    // 2. Secondary Path: yt-dlp with Node runtime
-    return new Promise((resolve, reject) => {
-      const ytdlpArgs = ['--js-runtimes', 'node', '-g', '-f', '140/ba/b', targetUrl];
-      execFile('yt-dlp', ytdlpArgs, { timeout: 20000 }, (err, stdout) => {
-        if (err) {
-          execFile('yt-dlp', ['--js-runtimes', 'node', '-g', targetUrl], { timeout: 20000 }, (fErr, fOut) => {
-            if (fErr) return reject(new Error('Failed to resolve audio stream: ' + (fErr.message || 'extraction error')));
-            const streamUrl = (fOut || '').trim().split('\n')[0];
-            if (streamUrl) {
-              streamCache.set(cacheKey, { url: streamUrl, expireAt: Date.now() + 18000000 });
-              saveStreamCacheToDisk();
-              return resolve(streamUrl);
-            }
-            reject(new Error('No stream found'));
+    if (!isSubsequentRange && inflightResolutions.has(cacheKey)) {
+      return inflightResolutions.get(cacheKey);
+    }
+    if (isSubsequentRange && inflightFullResolutions.has(cacheKey)) {
+      return inflightFullResolutions.get(cacheKey);
+    }
+  }
+
+  const resolutionPromise = (async () => {
+    if (targetId && !isSubsequentRange) {
+      // Launch background full resolver to guarantee fullUrl is ready for subsequent chunks
+      resolveFullStreamViaYtDlp(targetId, cleanTarget, isUrl).catch(() => {});
+
+      // Fast in-process Innertube resolver for instant sub-250ms playback start
+      try {
+        const streamDetails = await fetchYouTubeInnertubeStream(targetId, preferredQuality);
+        if (streamDetails && streamDetails.url) {
+          const existing = streamCache.get(cacheKey) || {};
+          streamCache.set(cacheKey, {
+            ...existing,
+            fastUrl: streamDetails.url,
+            url: existing.fullUrl || streamDetails.url,
+            expireAt: Date.now() + 18000000,
+            itag: streamDetails.itag,
+            mimeType: streamDetails.mimeType,
+            contentLength: streamDetails.contentLength,
+            resolvedId: targetId
           });
-          return;
-        }
-        const streamUrl = (stdout || '').trim().split('\n')[0];
-        if (streamUrl) {
-          streamCache.set(cacheKey, { url: streamUrl, expireAt: Date.now() + 18000000 });
+          if (cacheKey !== targetId) {
+            streamCache.set(targetId, streamCache.get(cacheKey));
+          }
           saveStreamCacheToDisk();
-          resolve(streamUrl);
-        } else {
-          reject(new Error('No stream URL extracted'));
+          return {
+            ...streamDetails,
+            resolvedId: targetId
+          };
         }
-      });
-    });
+      } catch (inErr) {
+        console.warn(`[FastResolver] In-process Innertube note (${targetId}):`, inErr.message, '- falling back to full resolver');
+      }
+    }
+
+    // Full stream resolver via yt-dlp
+    const fullRes = await resolveFullStreamViaYtDlp(targetId, cleanTarget, isUrl);
+    return {
+      ...fullRes,
+      resolvedId: targetId || cleanTarget
+    };
   })().finally(() => {
     inflightResolutions.delete(cacheKey);
   });
 
-  inflightResolutions.set(cacheKey, promise);
-  return promise;
+  inflightResolutions.set(cacheKey, resolutionPromise);
+  return resolutionPromise;
 }
 
-function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5) {
+function resolveAudioStream(target, platform = '', queryFallback = '', forceRefresh = false, preferredQuality = '', rangeStart = 0) {
+  // Support both (target, preferredQuality) and (target, platform, queryFallback, forceRefresh, preferredQuality)
+  if (arguments.length === 2 && ['aac', 'opus', '140', '251', 'high', 'low'].includes(String(platform).toLowerCase())) {
+    preferredQuality = platform;
+    platform = '';
+  }
+  return resolveAudioStreamDetails(target, platform, queryFallback, forceRefresh, preferredQuality, rangeStart).then(res => res.url);
+}
+
+/**
+ * Pipes HLS audio playlists (.m3u8) as a continuous progressive audio stream.
+ * Fetches playlist segments sequentially and writes MP3/AAC audio bytes directly
+ * into the HTTP response so HTML5 <audio> elements in desktop/mobile browsers
+ * can play SoundCloud and HLS streams seamlessly without requiring Hls.js.
+ */
+function streamHlsAudio(req, res, playlistUrl) {
+  let isAborted = false;
+  let activeReq = null;
+
+  const abort = () => {
+    isAborted = true;
+    if (activeReq) {
+      try { activeReq.destroy(); } catch (_) {}
+      activeReq = null;
+    }
+  };
+
+  req.on('close', abort);
+  res.on('close', abort);
+
+  let parsed;
+  try {
+    parsed = new URL(playlistUrl);
+  } catch (e) {
+    if (!res.headersSent) res.writeHead(400, { 'Access-Control-Allow-Origin': '*' }).end('Invalid playlist URL');
+    return;
+  }
+
+  const client = parsed.protocol === 'https:' ? https : http;
+
+  const m3u8Req = client.get(playlistUrl, {
+    agent: parsed.protocol === 'https:' ? keepAliveHttpsAgent : keepAliveHttpAgent,
+    headers: { 'User-Agent': 'Mozilla/5.0' },
+    timeout: 10000
+  }, (m3u8Res) => {
+    if (m3u8Res.statusCode >= 400) {
+      if (!res.headersSent) {
+        res.writeHead(502, { 'Access-Control-Allow-Origin': '*' }).end('Failed to fetch playlist');
+      }
+      return;
+    }
+
+    let body = '';
+    m3u8Res.on('data', chunk => { body += chunk; });
+    m3u8Res.on('end', async () => {
+      if (isAborted) return;
+      const lines = body.split('\n').map(l => l.trim()).filter(Boolean);
+      const segmentUrls = [];
+      for (const line of lines) {
+        if (line.startsWith('#')) continue;
+        if (line.startsWith('http://') || line.startsWith('https://')) {
+          segmentUrls.push(line);
+        } else {
+          try {
+            segmentUrls.push(new URL(line, playlistUrl).toString());
+          } catch (_) {}
+        }
+      }
+
+      if (segmentUrls.length === 0) {
+        if (!res.headersSent) {
+          res.writeHead(502, { 'Access-Control-Allow-Origin': '*' }).end('Empty playlist segments');
+        }
+        return;
+      }
+
+      const isMp3 = playlistUrl.includes('.mp3') || (segmentUrls[0] && segmentUrls[0].includes('.mp3'));
+      const contentType = isMp3 ? 'audio/mpeg' : 'audio/mp4';
+
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': '*',
+        'Cache-Control': 'public, max-age=86400',
+        'X-Accel-Buffering': 'no'
+      });
+      if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+      for (let i = 0; i < segmentUrls.length; i++) {
+        if (isAborted || res.writableEnded) break;
+        const segUrl = segmentUrls[i];
+        await new Promise((resolveSeg) => {
+          if (isAborted || res.writableEnded) return resolveSeg();
+          try {
+            const segParsed = new URL(segUrl);
+            const segClient = segParsed.protocol === 'https:' ? https : http;
+            activeReq = segClient.get(segUrl, {
+              agent: segParsed.protocol === 'https:' ? keepAliveHttpsAgent : keepAliveHttpAgent,
+              headers: { 'User-Agent': 'Mozilla/5.0' },
+              timeout: 15000
+            }, (segRes) => {
+              segRes.on('data', (chunk) => {
+                if (!isAborted && !res.writableEnded) {
+                  if (!res.write(chunk)) {
+                    segRes.pause();
+                  }
+                }
+              });
+              res.on('drain', () => {
+                if (!isAborted) segRes.resume();
+              });
+              segRes.on('end', resolveSeg);
+              segRes.on('error', resolveSeg);
+            });
+            activeReq.on('error', resolveSeg);
+          } catch (_) {
+            resolveSeg();
+          }
+        });
+      }
+
+      if (!res.writableEnded) res.end();
+    });
+  });
+
+  m3u8Req.on('error', (err) => {
+    if (!res.headersSent) {
+      res.writeHead(502, { 'Access-Control-Allow-Origin': '*' }).end('Playlist error: ' + err.message);
+    }
+  });
+}
+
+async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, options = {}) {
   if (!targetUrl) {
     res.writeHead(400, { 'Access-Control-Allow-Origin': '*' });
     return res.end('Missing url');
   }
+
+  // Handle HLS playlists on stream endpoint: stream segments as continuous audio
+  if (options && options.isStreamEndpoint && (targetUrl.includes('.m3u8') || targetUrl.includes('/hls') || targetUrl.includes('cf-hls-media') || targetUrl.includes('playback.media-streaming'))) {
+    return streamHlsAudio(req, res, targetUrl);
+  }
+
   let parsed;
   try {
     parsed = new URL(targetUrl);
@@ -288,12 +745,34 @@ function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5) {
   }
 
   if (hostLower.endsWith('googlevideo.com')) {
-    if (!forward['range']) {
-      forward['range'] = 'bytes=0-';
+    const cParam = (parsed.searchParams.get('c') || '').toUpperCase();
+    if (!forward['range'] || forward['range'] === 'bytes=0-') {
+      if (cParam === 'IOS') {
+        forward['range'] = 'bytes=0-1048575';
+      } else {
+        forward['range'] = 'bytes=0-';
+      }
     }
+
+    // Prevent 403 on c=IOS when range >= 1048576: upgrade to full stream if available
+    const rangeStart = forward['range'] ? parseInt((forward['range'].match(/bytes=(\d+)-/) || [])[1] || '0', 10) : 0;
+    if (cParam === 'IOS' && rangeStart >= 1048576 && options.targetId) {
+      let fullUrl = streamCache.get(options.targetId)?.fullUrl;
+      if (!fullUrl) {
+        try {
+          const fullDetails = await resolveFullStreamViaYtDlp(options.targetId);
+          if (fullDetails && fullDetails.url && fullDetails.url !== targetUrl) {
+            fullUrl = fullDetails.url;
+          }
+        } catch (_) {}
+      }
+      if (fullUrl && fullUrl !== targetUrl) {
+        return handleAudioProxy(req, res, fullUrl, redirectsLeft, options);
+      }
+    }
+
     forward['origin'] = 'https://www.youtube.com';
     forward['referer'] = 'https://www.youtube.com/';
-    const cParam = (parsed.searchParams.get('c') || '').toUpperCase();
     if (cParam === 'IOS') {
       forward['user-agent'] = 'com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)';
     } else if (cParam === 'ANDROID_VR') {
@@ -314,7 +793,7 @@ function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5) {
     family: 4,
     agent: parsed.protocol === 'https:' ? keepAliveHttpsAgent : keepAliveHttpAgent,
     headers: forward
-  }, (proxyRes) => {
+  }, async (proxyRes) => {
     if (res.writableEnded) {
       proxyRes.destroy();
       return;
@@ -322,12 +801,23 @@ function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5) {
     if ([301, 302, 303, 307, 308].includes(proxyRes.statusCode) && proxyRes.headers.location && redirectsLeft > 0) {
       proxyRes.resume();
       const nextUrl = new URL(proxyRes.headers.location, targetUrl).toString();
-      return handleAudioProxy(req, res, nextUrl, redirectsLeft - 1);
+      return handleAudioProxy(req, res, nextUrl, redirectsLeft - 1, options);
     }
     if (proxyRes.statusCode >= 400) {
       proxyRes.resume();
+      // Automatic failover: if c=IOS hit 403 on Google Video, resolve full stream and proxy it
+      const cParam = (parsed.searchParams.get('c') || '').toUpperCase();
+      if (proxyRes.statusCode === 403 && cParam === 'IOS' && options.targetId && redirectsLeft > 0) {
+        try {
+          const fullDetails = await resolveFullStreamViaYtDlp(options.targetId);
+          if (fullDetails && fullDetails.url && fullDetails.url !== targetUrl) {
+            return handleAudioProxy(req, res, fullDetails.url, redirectsLeft - 1, options);
+          }
+        } catch (_) {}
+      }
+
       for (const [k, v] of streamCache.entries()) {
-        if (v && v.url === targetUrl) {
+        if (v && (v.url === targetUrl || v.fastUrl === targetUrl || v.fullUrl === targetUrl)) {
           streamCache.delete(k);
           break;
         }
@@ -335,6 +825,7 @@ function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5) {
       res.writeHead(502, { 'Access-Control-Allow-Origin': '*' });
       return res.end('Upstream error');
     }
+
     const outHeaders = Object.assign({}, proxyRes.headers);
     delete outHeaders['access-control-allow-origin'];
     delete outHeaders['Access-Control-Allow-Origin'];
@@ -344,13 +835,57 @@ function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5) {
     outHeaders['Access-Control-Allow-Headers'] = '*';
     outHeaders['Access-Control-Expose-Headers'] = 'Content-Length, Content-Range, Accept-Ranges';
     outHeaders['X-Accel-Buffering'] = 'no';
-    outHeaders['Cache-Control'] = 'no-cache, no-transform';
+    outHeaders['Accept-Ranges'] = 'bytes';
+
+    if (options && options.isStreamEndpoint) {
+      outHeaders['Cache-Control'] = 'public, max-age=86400';
+      if (!outHeaders['content-type'] || !outHeaders['content-type'].includes('/')) {
+        outHeaders['Content-Type'] = options.contentType || 'audio/mp4';
+      }
+    } else {
+      outHeaders['Cache-Control'] = 'no-cache, no-transform';
+    }
 
     res.writeHead(proxyRes.statusCode || 200, outHeaders);
+    if (typeof res.flushHeaders === 'function') {
+      res.flushHeaders();
+    }
+    if (res.socket && typeof res.socket.setNoDelay === 'function') {
+      res.socket.setNoDelay(true);
+    }
+
+    // Fast-burst initial 64KB chunk (containing MP4 ftyp + moov) without proxy buffering
+    let initialBytes = 0;
+    const FAST_BURST_THRESHOLD = 64 * 1024;
+    let bursting = true;
+
+    const onData = (chunk) => {
+      if (bursting) {
+        initialBytes += chunk.length;
+        res.write(chunk);
+        if (res.socket && typeof res.socket.uncork === 'function') {
+          try { res.socket.uncork(); } catch (_) {}
+        }
+        if (initialBytes >= FAST_BURST_THRESHOLD) {
+          bursting = false;
+        }
+      } else {
+        if (!res.write(chunk)) {
+          proxyRes.pause();
+        }
+      }
+    };
+
+    proxyRes.on('data', onData);
+    res.on('drain', () => {
+      proxyRes.resume();
+    });
+    proxyRes.on('end', () => {
+      res.end();
+    });
     proxyRes.on('error', () => {
       try { res.destroy(); } catch (e) {}
     });
-    proxyRes.pipe(res);
   });
 
   const abortProxy = () => {
@@ -629,6 +1164,7 @@ function searchYouTubeMusic(query) {
       hostname: 'music.youtube.com',
       path: '/youtubei/v1/search',
       method: 'POST',
+      agent: keepAliveHttpsAgent,
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(reqBody),
@@ -642,6 +1178,13 @@ function searchYouTubeMusic(query) {
         try {
           const json = JSON.parse(data);
           const songs = parseYtmSongs(json);
+          if (Array.isArray(songs) && songs.length > 0 && songs[0].id) {
+            const norm = normalizeTrackKey(query);
+            if (norm) {
+              idMapCache.set(norm, songs[0].id);
+              saveIdCacheToDisk();
+            }
+          }
           resolve(songs);
         } catch (e) {
           reject(e);
@@ -771,27 +1314,46 @@ function searchSoundcloud(query, limit = 14) {
       '--no-check-certificates'
     ];
     execFile('yt-dlp', args, { timeout: 18000 }, (err, stdout) => {
-      if (err || !stdout) return resolve([]);
+      if (!err && stdout) {
+        try {
+          const data = JSON.parse(stdout);
+          const entries = (data.entries || []).map((item) => {
+            let thumbnail = '';
+            if (item.thumbnails && item.thumbnails.length > 0) {
+              thumbnail = item.thumbnails[item.thumbnails.length - 1].url;
+            } else if (item.thumbnail) {
+              thumbnail = item.thumbnail;
+            }
+            return {
+              id: String(item.id || Math.random().toString(36).substring(2)),
+              title: item.title || 'Untitled',
+              artist: item.uploader || item.channel || item.artist || 'Unknown Artist',
+              duration: item.duration || 0,
+              thumbnail: thumbnail,
+              url: item.webpage_url || item.url || '',
+              platform: 'soundcloud'
+            };
+          });
+          if (entries.length > 0) return resolve(entries);
+        } catch (_) {}
+      }
+
+      // Fallback for local development if yt-dlp is missing: fetch from production VPS search
       try {
-        const data = JSON.parse(stdout);
-        const entries = (data.entries || []).map((item) => {
-          let thumbnail = '';
-          if (item.thumbnails && item.thumbnails.length > 0) {
-            thumbnail = item.thumbnails[item.thumbnails.length - 1].url;
-          } else if (item.thumbnail) {
-            thumbnail = item.thumbnail;
-          }
-          return {
-            id: String(item.id || Math.random().toString(36).substring(2)),
-            title: item.title || 'Untitled',
-            artist: item.uploader || item.channel || item.artist || 'Unknown Artist',
-            duration: item.duration || 0,
-            thumbnail: thumbnail,
-            url: item.webpage_url || item.url || '',
-            platform: 'soundcloud'
-          };
-        });
-        resolve(entries);
+        const vpsUrl = `https://app.raserapp.online/api/search?q=${encodeURIComponent(query)}&platform=soundcloud`;
+        https.get(vpsUrl, { timeout: 10000, headers: { 'User-Agent': 'RaserLocalDev/1.0' } }, (vpsRes) => {
+          let body = '';
+          vpsRes.on('data', chunk => body += chunk);
+          vpsRes.on('end', () => {
+            try {
+              const parsed = JSON.parse(body);
+              if (parsed && Array.isArray(parsed.tracks) && parsed.tracks.length > 0) {
+                return resolve(parsed.tracks);
+              }
+            } catch (_) {}
+            resolve([]);
+          });
+        }).on('error', () => resolve([]));
       } catch (_) {
         resolve([]);
       }
@@ -1077,34 +1639,83 @@ const server = http.createServer(async (req, res) => {
     return handleAudioProxy(req, res, targetUrl);
   }
 
-  // Stream resolver endpoint: /api/stream?id=...
+  // Direct Audio Streaming endpoint: GET /api/stream?id=...&title=...&artist=...
   if (pathname === '/api/stream') {
     res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', '*');
     const reqUrlParam = (reqUrl.searchParams.get('url') || '').trim();
     const reqIdParam = (reqUrl.searchParams.get('id') || '').trim();
     const platform = (reqUrl.searchParams.get('platform') || '').trim().toLowerCase();
-    const id = reqIdParam || extractYouTubeId(reqUrlParam) || reqUrlParam;
-    if (!id) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: false, error: 'Missing track id or url' }));
-      return;
+    const title = (reqUrl.searchParams.get('title') || '').trim();
+    const artist = (reqUrl.searchParams.get('artist') || '').trim();
+    const quality = (reqUrl.searchParams.get('quality') || '').trim().toLowerCase();
+    const refresh = reqUrl.searchParams.get('refresh') === '1' || reqUrl.searchParams.get('forceYtDlp') === '1';
+    const queryFallback = (reqUrl.searchParams.get('q') || '').trim() || (artist && title ? `${artist} - ${title}` : title);
+
+    const isSoundcloud = platform === 'soundcloud' || reqUrlParam.includes('soundcloud.com') || (!extractYouTubeId(reqIdParam) && /^\d{6,}$/.test(reqIdParam));
+
+    let target = reqIdParam || extractYouTubeId(reqUrlParam) || reqUrlParam;
+    if (!target && queryFallback) {
+      target = queryFallback;
+    }
+
+    if (!target) {
+      if (reqUrl.searchParams.get('format') === 'json') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: 'Missing track id or url' }));
+      }
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      return res.end('Missing track id or url');
     }
 
     try {
-      const reqHost = req.headers['x-forwarded-host'] || req.headers.host || 'app.raserapp.online';
-      const reqProto = req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http');
-      const serverOrigin = `${reqProto}://${reqHost}`;
-      const rawStreamUrl = await resolveAudioStream(id, platform);
+      const rangeHeader = req.headers['range'] || '';
+      let rangeStart = 0;
+      const rangeMatch = rangeHeader.match(/bytes=(\d+)-/);
+      if (rangeMatch) {
+        rangeStart = parseInt(rangeMatch[1], 10);
+      }
+
+      const effectivePlatform = isSoundcloud ? 'soundcloud' : (platform || 'youtube');
+      const streamDetails = await resolveAudioStreamDetails(target, effectivePlatform, queryFallback, refresh, quality, rangeStart);
+      const rawStreamUrl = streamDetails.url;
       const isHls = rawStreamUrl.includes('.m3u8') || rawStreamUrl.includes('/hls') || rawStreamUrl.includes('cf-hls-media') || rawStreamUrl.includes('playback.media-streaming');
-      const proxiedUrl = `${serverOrigin}/api/audio-proxy?url=${encodeURIComponent(rawStreamUrl)}`;
-      const streamUrl = isHls ? rawStreamUrl : proxiedUrl;
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: true, streamUrl, proxyUrl: proxiedUrl, rawStreamUrl, isHls }));
+
+      // Backward compatibility: format=json query parameter returns JSON
+      if (reqUrl.searchParams.get('format') === 'json') {
+        const reqHost = req.headers['x-forwarded-host'] || req.headers.host || 'app.raserapp.online';
+        const reqProto = req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http');
+        const serverOrigin = `${reqProto}://${reqHost}`;
+        const proxiedUrl = `${serverOrigin}/api/audio-proxy?url=${encodeURIComponent(rawStreamUrl)}`;
+        const streamUrl = isHls ? rawStreamUrl : proxiedUrl;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({
+          success: true,
+          streamUrl,
+          proxyUrl: proxiedUrl,
+          rawStreamUrl,
+          isHls,
+          mimeType: streamDetails.mimeType,
+          itag: streamDetails.itag,
+          resolvedId: streamDetails.resolvedId || null
+        }));
+      }
+
+      // Direct audio streaming pipeline straight into HTTP response
+      const determinedMime = streamDetails.mimeType ? streamDetails.mimeType.split(';')[0].trim() : (streamDetails.itag === 251 ? 'audio/webm' : 'audio/mp4');
+      return handleAudioProxy(req, res, rawStreamUrl, 5, {
+        isStreamEndpoint: true,
+        contentType: determinedMime,
+        targetId: target
+      });
     } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: false, error: err.message }));
+      if (reqUrl.searchParams.get('format') === 'json') {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+      res.writeHead(502, { 'Content-Type': 'text/plain' });
+      return res.end(`Failed to stream audio: ${err.message}`);
     }
-    return;
   }
 
   // Desktop & Web stream info endpoint: /api/stream-info?id=...&url=...
@@ -1156,8 +1767,11 @@ const server = http.createServer(async (req, res) => {
 
     try {
       const refresh = reqUrl.searchParams.get('refresh') === '1' || reqUrl.searchParams.get('forceYtDlp') === '1';
+      const forceYtDlp = reqUrl.searchParams.get('forceYtDlp') === '1';
       const effectivePlatform = isSoundcloud ? 'youtube' : platform;
-      const rawStreamUrl = await resolveAudioStream(target, effectivePlatform, queryFallback, refresh);
+      const rangeStart = forceYtDlp ? 1048576 : 0;
+      const streamDetails = await resolveAudioStreamDetails(target, effectivePlatform, queryFallback, refresh, '', rangeStart);
+      const rawStreamUrl = streamDetails.url;
       const isHls = rawStreamUrl.includes('.m3u8');
       const proxiedUrl = `${serverOrigin}/api/audio-proxy?url=${encodeURIComponent(rawStreamUrl)}`;
       const streamUrl = isHls ? rawStreamUrl : proxiedUrl;
@@ -1168,13 +1782,101 @@ const server = http.createServer(async (req, res) => {
         proxyUrl: proxiedUrl,
         rawStreamUrl: rawStreamUrl,
         isHls: isHls,
-        isLocal: false
+        isLocal: false,
+        resolvedId: streamDetails.resolvedId || null
       }));
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: false, error: err.message }));
     }
     return;
+  }
+
+  // Pre-resolve YouTube Video IDs in batch: POST /api/resolve-ids or GET /api/resolve-ids?q=...
+  if (pathname === '/api/resolve-ids') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', '*');
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      return res.end();
+    }
+
+    const handleBatchResolve = async (tracks) => {
+      if (!Array.isArray(tracks) || tracks.length === 0) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: true, resolved: {} }));
+      }
+
+      const slice = tracks.slice(0, 30);
+      const resolved = {};
+      const toSearch = [];
+
+      for (const t of slice) {
+        if (!t) continue;
+        const id = String(t.id || '').trim();
+        const artist = String(t.artist || '').trim();
+        const title = String(t.title || '').trim();
+        const is11 = /^[a-zA-Z0-9_-]{11}$/.test(id) && !/^(cand_|dz_|it_|sp_|ym_)/i.test(id);
+
+        if (is11) {
+          resolved[id] = id;
+          continue;
+        }
+
+        const norm = normalizeTrackKey(artist ? `${artist} - ${title}` : title);
+        if (id && idMapCache.has(id)) {
+          resolved[id] = idMapCache.get(id);
+        } else if (norm && idMapCache.has(norm)) {
+          resolved[id || norm] = idMapCache.get(norm);
+        } else if (title || artist) {
+          toSearch.push({ origId: id || norm, query: artist ? `${artist} ${title}` : title, norm });
+        }
+      }
+
+      if (toSearch.length > 0) {
+        const concurrency = 6;
+        for (let i = 0; i < toSearch.length; i += concurrency) {
+          const chunk = toSearch.slice(i, i + concurrency);
+          await Promise.all(chunk.map(async (item) => {
+            try {
+              const resSongs = await searchYouTubeMusic(item.query);
+              if (Array.isArray(resSongs) && resSongs.length > 0 && resSongs[0].id) {
+                const vid = resSongs[0].id;
+                resolved[item.origId] = vid;
+                if (item.norm) idMapCache.set(item.norm, vid);
+                if (item.origId) idMapCache.set(item.origId, vid);
+              }
+            } catch (_) {}
+          }));
+        }
+        saveIdCacheToDisk();
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, resolved }));
+    };
+
+    if (req.method === 'POST') {
+      let body = '';
+      req.on('data', chunk => body += chunk);
+      req.on('end', () => {
+        try {
+          const parsed = JSON.parse(body || '{}');
+          handleBatchResolve(parsed.tracks || []);
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: 'Invalid JSON' }));
+        }
+      });
+      return;
+    } else {
+      const q = reqUrl.searchParams.get('q') || '';
+      const id = reqUrl.searchParams.get('id') || '';
+      const title = reqUrl.searchParams.get('title') || '';
+      const artist = reqUrl.searchParams.get('artist') || '';
+      handleBatchResolve([{ id, title: title || q, artist }]);
+      return;
+    }
   }
 
   // Desktop helper endpoints
@@ -1316,7 +2018,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   const host = (req.headers['x-forwarded-host'] || req.headers.host || '').toLowerCase();
-  const isApp = host.startsWith('app.') || pathname.startsWith('/app') || reqUrl.searchParams.get('app') === '1';
+  const referer = (req.headers.referer || '').toLowerCase();
+  const isApp = host.startsWith('app.') || pathname.startsWith('/app') || reqUrl.searchParams.get('app') === '1' || referer.includes('/app') || referer.includes('app=1') || req.headers['x-is-app'] === '1';
 
   // Main page / player / web player
   if (pathname === '/' || pathname === '/index.html' || pathname === '/app' || pathname === '/app/') {
@@ -1336,7 +2039,8 @@ const server = http.createServer(async (req, res) => {
 
   // If in app context and file exists in desktop-web, serve it
   if (isApp) {
-    const desktopPath = path.normalize(path.join(PUBLIC_DIR, 'desktop-web', pathname)).replace(/^(\.\.[\/\\])+/, '');
+    const cleanPath = pathname.replace(/^\/app(\/|$)/, '/');
+    const desktopPath = path.normalize(path.join(PUBLIC_DIR, 'desktop-web', cleanPath)).replace(/^(\.\.[\/\\])+/, '');
     if (desktopPath.startsWith(path.join(PUBLIC_DIR, 'desktop-web')) && fs.existsSync(desktopPath) && fs.statSync(desktopPath).isFile()) {
       const ext = path.extname(desktopPath).toLowerCase();
       const mimeTypes = {
@@ -1388,6 +2092,17 @@ const server = http.createServer(async (req, res) => {
   });
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`RaserWeb server running at http://0.0.0.0:${PORT}`);
-});
+if (require.main === module) {
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`RaserWeb server running at http://0.0.0.0:${PORT}`);
+  });
+}
+
+module.exports = {
+  server,
+  resolveAudioStream,
+  resolveAudioStreamDetails,
+  fetchYouTubeInnertubeStream,
+  searchYouTubeMusic,
+  handleAudioProxy
+};
