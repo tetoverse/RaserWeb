@@ -170,7 +170,7 @@ async function fetchDirectSoundCloudStream(scUrlOrId, queryFallback) {
   return null;
 }
 
-function resolveAudioStream(target, platform = '', queryFallback = '') {
+function resolveAudioStream(target, platform = '', queryFallback = '', forceRefresh = false) {
   if (!target || typeof target !== 'string') {
     return Promise.reject(new Error('Invalid target for audio stream'));
   }
@@ -189,13 +189,18 @@ function resolveAudioStream(target, platform = '', queryFallback = '') {
   const targetUrl = targetId ? `https://www.youtube.com/watch?v=${targetId}` : (isUrl || cleanTarget.startsWith('ytsearch') ? cleanTarget : `ytsearch1:${cleanTarget}`);
   const cacheKey = targetId || cleanTarget;
 
-  const cached = streamCache.get(cacheKey);
-  if (cached && cached.expireAt > Date.now()) {
-    return Promise.resolve(cached.url);
-  }
+  if (forceRefresh) {
+    streamCache.delete(cacheKey);
+    inflightResolutions.delete(cacheKey);
+  } else {
+    const cached = streamCache.get(cacheKey);
+    if (cached && cached.expireAt > Date.now()) {
+      return Promise.resolve(cached.url);
+    }
 
-  if (inflightResolutions.has(cacheKey)) {
-    return inflightResolutions.get(cacheKey);
+    if (inflightResolutions.has(cacheKey)) {
+      return inflightResolutions.get(cacheKey);
+    }
   }
 
   const promise = (async () => {
@@ -321,6 +326,12 @@ function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5) {
     }
     if (proxyRes.statusCode >= 400) {
       proxyRes.resume();
+      for (const [k, v] of streamCache.entries()) {
+        if (v && v.url === targetUrl) {
+          streamCache.delete(k);
+          break;
+        }
+      }
       res.writeHead(502, { 'Access-Control-Allow-Origin': '*' });
       return res.end('Upstream error');
     }
@@ -1144,8 +1155,9 @@ const server = http.createServer(async (req, res) => {
     }
 
     try {
+      const refresh = reqUrl.searchParams.get('refresh') === '1' || reqUrl.searchParams.get('forceYtDlp') === '1';
       const effectivePlatform = isSoundcloud ? 'youtube' : platform;
-      const rawStreamUrl = await resolveAudioStream(target, effectivePlatform, queryFallback);
+      const rawStreamUrl = await resolveAudioStream(target, effectivePlatform, queryFallback, refresh);
       const isHls = rawStreamUrl.includes('.m3u8');
       const proxiedUrl = `${serverOrigin}/api/audio-proxy?url=${encodeURIComponent(rawStreamUrl)}`;
       const streamUrl = isHls ? rawStreamUrl : proxiedUrl;
