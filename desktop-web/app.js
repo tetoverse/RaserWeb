@@ -890,7 +890,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   Object.assign(state, {
     selectedTracks: new Map(),
     lastClickedTrackRow: null,
-    platform: localStorage.getItem('riff_platform') || 'ytmusic',
+    platform: localStorage.getItem('raser_platform') || localStorage.getItem('riff_platform') || 'ytmusic',
     currentView: 'discover',
     previousView: 'discover',
     currentPlaylistId: null,
@@ -4557,7 +4557,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const blob = await res.blob();
-        if (!blob || blob.size < 1000) throw new Error('Blob empty or corrupted');
+        if (!blob || blob.size < 1.5 * 1024 * 1024) throw new Error('Blob empty or partial burst');
 
         evictOldestBlobIfNeeded();
         const blobUrl = URL.createObjectURL(blob);
@@ -4997,11 +4997,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       playSmooth();
       applyAudioSettings();
 
-      setTimeout(() => {
-        if (state.isPlaying && state.currentTrack === track) {
-          bufferTrackToBlob(track, playUrl).catch(() => {});
-        }
-      }, 4000);
 
       // Supplementary stream-info resolution in background (for caching / metadata only, never disrupt playing stream!)
       (async () => {
@@ -8093,6 +8088,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   function pauseSmooth() {
     const curToken = ++smoothFadeToken;
     isPauseFading = true;
+    state._intentionalPause = true;
+    state._isWaitingForData = false;
     frozenCurTime = (el.nativeAudio && Number.isFinite(el.nativeAudio.currentTime)) ? el.nativeAudio.currentTime : 0;
     state.isPlaying = false;
     document.body.classList.remove('is-playing');
@@ -8156,6 +8153,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   async function playSmooth() {
     const curToken = ++smoothFadeToken;
     isPauseFading = false;
+    state._intentionalPause = false;
+    state._isWaitingForData = false;
     state.isPlaying = true;
     document.body.classList.add('is-playing');
     setPlayPauseState(true, true);
@@ -8730,9 +8729,19 @@ document.addEventListener('DOMContentLoaded', async () => {
       const token = state.loadToken;
       playbackStallTimer = setTimeout(() => {
         playbackStallTimer = null;
-        if (token !== state.loadToken || el.nativeAudio.paused || el.nativeAudio.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) return;
+        if (token !== state.loadToken || state._intentionalPause || el.nativeAudio.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) return;
+        // Auto-resume if element was paused by stall underrun
+        if (state.isPlaying && el.nativeAudio.paused && !state._intentionalPause) {
+          const p = el.nativeAudio.play();
+          if (p && typeof p.catch === 'function') {
+            p.catch(() => {
+              recoverCurrentStream(el.nativeAudio.currentTime || 0);
+            });
+            return;
+          }
+        }
         recoverCurrentStream(el.nativeAudio.currentTime || 0);
-      }, 12000);
+      }, 4500);
     }
 
     el.nativeAudio.addEventListener('error', () => {
@@ -8742,12 +8751,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     el.nativeAudio.addEventListener('waiting', () => {
+      state._isWaitingForData = true;
       updatePlayPauseButton(state.isPlaying, true);
-      if (!el.nativeAudio.paused) watchPlaybackStall();
+      watchPlaybackStall();
     });
 
     el.nativeAudio.addEventListener('stalled', () => {
-      if (!el.nativeAudio.paused) watchPlaybackStall();
+      state._isWaitingForData = true;
+      updatePlayPauseButton(state.isPlaying, true);
+      watchPlaybackStall();
     });
 
     function prefetchNextQueueTrack() {
@@ -8764,6 +8776,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     el.nativeAudio.addEventListener('playing', () => {
+      state._isWaitingForData = false;
+      state._intentionalPause = false;
       clearPlaybackStallTimer();
       state.isPlaying = true;
       state.consecutivePlayFailures = 0;
@@ -8780,7 +8794,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     el.nativeAudio.addEventListener('canplay', () => {
+      state._isWaitingForData = false;
       updatePlayPauseButton(state.isPlaying, false);
+      if (state.isPlaying && el.nativeAudio.paused && !state._intentionalPause) {
+        el.nativeAudio.play().catch(() => {});
+      }
+    });
+
+    el.nativeAudio.addEventListener('canplaythrough', () => {
+      state._isWaitingForData = false;
+      updatePlayPauseButton(state.isPlaying, false);
+      if (state.isPlaying && el.nativeAudio.paused && !state._intentionalPause) {
+        el.nativeAudio.play().catch(() => {});
+      }
+    });
+
+    el.nativeAudio.addEventListener('progress', () => {
+      if (state.isPlaying && el.nativeAudio.paused && !state._intentionalPause && el.nativeAudio.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        state._isWaitingForData = false;
+        updatePlayPauseButton(state.isPlaying, false);
+        el.nativeAudio.play().catch(() => {});
+      }
     });
 
     el.nativeAudio.addEventListener('loadstart', () => {
@@ -8865,6 +8899,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     el.nativeAudio.addEventListener('pause', () => {
+      // If the audio element was paused by browser buffer starvation/waiting rather than intentional user pause:
+      if (!state._intentionalPause) {
+        state._isWaitingForData = true;
+        updatePlayPauseButton(true, true);
+        watchPlaybackStall();
+        return;
+      }
+      state._isWaitingForData = false;
       clearPlaybackStallTimer();
       isPauseFading = false;
       emitPluginEvent('pause');
@@ -8924,7 +8966,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       } else {
         const expectedDur = getReliableTrackDuration();
         const pos = el.nativeAudio.currentTime || 0;
-        if (state.currentTrack && state.currentTrack.platform !== 'local' && expectedDur > 25 && pos < expectedDur - 12 && (state._streamRecoverCount || 0) < 2) {
+        if (state.currentTrack && state.currentTrack.platform !== 'local' && (expectedDur <= 0 || pos < expectedDur - 10) && (state._streamRecoverCount || 0) < 3) {
           state._streamRecoverCount = (state._streamRecoverCount || 0) + 1;
           delete state.currentTrack._preloadedStreamUrl;
           recoverCurrentStream(pos);
@@ -14989,6 +15031,12 @@ function bindCoverHoldZoom(wrapEl) {
   const engineApiDropdown = document.getElementById('engine-api-dropdown');
   const engineApiTrigger = document.getElementById('engine-api-trigger');
   const engineApiMenu = document.getElementById('engine-api-menu');
+  const engineApiSelect = document.getElementById('select-engine-api');
+  if (engineApiSelect) {
+    engineApiSelect.addEventListener('change', () => {
+      setPlatform(engineApiSelect.value);
+    });
+  }
   if (engineApiDropdown && engineApiTrigger && engineApiMenu) {
     engineApiTrigger.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -22314,10 +22362,6 @@ function bindCoverHoldZoom(wrapEl) {
       return;
     }
 
-    if (url.includes('soundcloud.com')) setPlatform('soundcloud', false);
-    else if (url.includes('music.youtube.com')) setPlatform('ytmusic', false);
-    else if (url.includes('youtube.com') || url.includes('youtu.be')) setPlatform('youtube', false);
-
     const hasBusy = typeof beginBusy === 'function';
     if (hasBusy) beginBusy('import');
     try {
@@ -22851,7 +22895,6 @@ function bindCoverHoldZoom(wrapEl) {
   linkImportBtns.forEach(btn => {
     btn.addEventListener('click', () => {
       document.getElementById('create-playlist-modal')?.classList.add('hidden');
-      if (btn.dataset.platform && btn.dataset.platform !== 'deezer') setPlatform(btn.dataset.platform, false);
       openLinkImportModal(btn.dataset.platform || '');
     });
   });

@@ -348,8 +348,37 @@ function resolveFullStreamViaYtDlp(targetId, cleanTarget = '', isUrl = false) {
   }
 
   const promise = (async () => {
-    const fallbackTarget = targetId ? `https://www.youtube.com/watch?v=${targetId}` : (isUrl || cleanTarget.startsWith('ytsearch') ? cleanTarget : `ytsearch1:${cleanTarget}`);
-    const ytdlpArgs = ['--extractor-args', 'youtube:player_client=tvhtml5', '-g', '-f', '140/ba/b', fallbackTarget];
+    let resolvedVideoId = targetId;
+    if (!resolvedVideoId && (isUrl || cleanTarget.startsWith('ytsearch') || cleanTarget)) {
+      const q = cleanTarget.replace(/^ytsearch\d*:/i, '').replace(/^(cand_|dz_|it_|sp_|ym_)/i, '').trim();
+      const norm = normalizeTrackKey(q);
+      if (norm && idMapCache.has(norm)) {
+        resolvedVideoId = idMapCache.get(norm);
+      } else if (cleanTarget && idMapCache.has(cleanTarget)) {
+        resolvedVideoId = idMapCache.get(cleanTarget);
+      } else if (q) {
+        try {
+          const sRes = await searchYouTubeMusic(q);
+          if (Array.isArray(sRes) && sRes[0]?.id) {
+            resolvedVideoId = sRes[0].id;
+            if (norm) idMapCache.set(norm, resolvedVideoId);
+            if (cleanTarget) idMapCache.set(cleanTarget, resolvedVideoId);
+            saveIdCacheToDisk();
+          } else {
+            const wRes = await searchYouTubeInnertubeWeb(q);
+            if (Array.isArray(wRes) && wRes[0]?.id) {
+              resolvedVideoId = wRes[0].id;
+              if (norm) idMapCache.set(norm, resolvedVideoId);
+              if (cleanTarget) idMapCache.set(cleanTarget, resolvedVideoId);
+              saveIdCacheToDisk();
+            }
+          }
+        } catch (_) {}
+      }
+    }
+
+    const fallbackTarget = resolvedVideoId ? `https://www.youtube.com/watch?v=${resolvedVideoId}` : (isUrl ? cleanTarget : `ytsearch1:${cleanTarget}`);
+    const ytdlpArgs = ['--no-warnings', '--no-playlist', '--extractor-args', 'youtube:player_client=tvhtml5', '-g', '-f', '140/ba/b', fallbackTarget];
 
     let streamUrl = null;
 
@@ -360,7 +389,7 @@ function resolveFullStreamViaYtDlp(targetId, cleanTarget = '', isUrl = false) {
           if (!err && stdout && stdout.trim().startsWith('https://')) {
             return resolveYt(stdout.trim().split('\n')[0]);
           }
-          execFile('yt-dlp', ['--js-runtimes', 'node', '-g', '-f', '140/ba/b', fallbackTarget], { timeout: 25000 }, (fErr, fOut) => {
+          execFile('yt-dlp', ['--no-warnings', '--no-playlist', '--js-runtimes', 'node', '-g', '-f', '140/ba/b', fallbackTarget], { timeout: 25000 }, (fErr, fOut) => {
             if (!fErr && fOut && fOut.trim().startsWith('https://')) {
               return resolveYt(fOut.trim().split('\n')[0]);
             }
@@ -370,11 +399,12 @@ function resolveFullStreamViaYtDlp(targetId, cleanTarget = '', isUrl = false) {
       });
     } catch (localYtErr) {
       // 2. Fallback to production VPS endpoint if local yt-dlp is missing (e.g. Windows development / test suite)
-      if (targetId && !isUrl) {
+      const lookupId = resolvedVideoId || targetId;
+      if (lookupId && !isUrl) {
         try {
-          const vpsApiUrl = `https://app.raserapp.online/api/stream?id=${encodeURIComponent(targetId)}&format=json`;
+          const vpsApiUrl = `https://app.raserapp.online/api/stream-info?id=${encodeURIComponent(lookupId)}&forceYtDlp=1`;
           streamUrl = await new Promise((resolveVps, rejectVps) => {
-            const vpsReq = https.get(vpsApiUrl, { timeout: 10000, headers: { 'User-Agent': 'RaserLocalDev/1.0' } }, (vpsRes) => {
+            const vpsReq = https.get(vpsApiUrl, { timeout: 15000, headers: { 'User-Agent': 'RaserLocalDev/1.0' } }, (vpsRes) => {
               let body = '';
               vpsRes.on('data', chunk => body += chunk);
               vpsRes.on('end', () => {
@@ -494,6 +524,17 @@ async function resolveAudioStreamDetails(target, platform = '', queryFallback = 
         } catch (sErr) {
           console.warn('[FastResolver] In-process searchYouTubeMusic note:', sErr.message);
         }
+      }
+      if (!targetId) {
+        try {
+          const webResults = await searchYouTubeInnertubeWeb(searchQuery);
+          if (Array.isArray(webResults) && webResults.length > 0 && webResults[0].id) {
+            targetId = webResults[0].id;
+            if (norm) idMapCache.set(norm, targetId);
+            if (cleanTarget) idMapCache.set(cleanTarget, targetId);
+            saveIdCacheToDisk();
+          }
+        } catch (_) {}
       }
     }
   }
@@ -710,6 +751,75 @@ function streamHlsAudio(req, res, playlistUrl) {
   });
 }
 
+function pumpRemainderFromUrl(req, res, targetUrl, startByte, totalLength, redirectsLeft = 5) {
+  if (res.writableEnded || !res.writable) return;
+  let parsed;
+  try {
+    parsed = new URL(targetUrl);
+  } catch (e) {
+    return res.end();
+  }
+  const client = parsed.protocol === 'https:' ? https : http;
+  const headers = {
+    'host': parsed.host,
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+    'origin': 'https://www.youtube.com',
+    'referer': 'https://www.youtube.com/',
+    'range': `bytes=${startByte}-${totalLength ? totalLength - 1 : ''}`
+  };
+
+  const remainderReq = client.request(targetUrl, {
+    method: 'GET',
+    family: 4,
+    agent: parsed.protocol === 'https:' ? keepAliveHttpsAgent : keepAliveHttpAgent,
+    headers
+  }, (remainderRes) => {
+    console.log(`[pumpRemainderFromUrl] Upstream status: ${remainderRes.statusCode} for range ${headers['range']}`);
+    if (res.writableEnded) {
+      remainderRes.destroy();
+      return;
+    }
+    if ([301, 302, 303, 307, 308].includes(remainderRes.statusCode) && remainderRes.headers.location && redirectsLeft > 0) {
+      remainderRes.resume();
+      const nextUrl = new URL(remainderRes.headers.location, targetUrl).toString();
+      return pumpRemainderFromUrl(req, res, nextUrl, startByte, totalLength, redirectsLeft - 1);
+    }
+    if (remainderRes.statusCode >= 400) {
+      console.log(`[pumpRemainderFromUrl] Upstream error: ${remainderRes.statusCode}`);
+      remainderRes.resume();
+      return res.end();
+    }
+
+    remainderRes.on('data', chunk => {
+      if (!res.write(chunk)) {
+        remainderRes.pause();
+      }
+    });
+    res.on('drain', () => {
+      remainderRes.resume();
+    });
+    remainderRes.on('end', () => {
+      if (!res.writableEnded) res.end();
+    });
+    remainderRes.on('error', () => {
+      if (!res.writableEnded) res.end();
+    });
+  });
+
+  const abort = () => {
+    try { remainderReq.destroy(); } catch (_) {}
+  };
+  req.on('close', abort);
+  res.on('close', abort);
+  remainderReq.setTimeout(60000, () => {
+    remainderReq.destroy();
+  });
+  remainderReq.on('error', () => {
+    if (!res.writableEnded) res.end();
+  });
+  remainderReq.end();
+}
+
 async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, options = {}) {
   if (!targetUrl) {
     res.writeHead(400, { 'Access-Control-Allow-Origin': '*' });
@@ -738,29 +848,44 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, options 
     return res.end('Blocked target');
   }
 
+  // Derive targetId if missing from options
+  let effectiveTargetId = options.targetId;
+  if (!effectiveTargetId) {
+    if (parsed.searchParams.has('docid')) {
+      effectiveTargetId = parsed.searchParams.get('docid');
+    }
+    if (!effectiveTargetId) {
+      for (const [k, v] of streamCache.entries()) {
+        if (v && (v.url === targetUrl || v.fastUrl === targetUrl || v.fullUrl === targetUrl)) {
+          effectiveTargetId = k;
+          break;
+        }
+      }
+    }
+  }
+
   const client = parsed.protocol === 'https:' ? https : http;
   const forward = { host: parsed.host };
   for (const key of ['range', 'accept', 'accept-language']) {
     if (req.headers[key] !== undefined) forward[key] = req.headers[key];
   }
 
+  const rangeHeader = forward['range'] || '';
+  const rangeMatch = rangeHeader.match(/bytes=(\d+)-(\d+)?/);
+  const rangeStart = rangeMatch ? parseInt(rangeMatch[1], 10) : 0;
+  const rangeEnd = rangeMatch && rangeMatch[2] ? parseInt(rangeMatch[2], 10) : null;
+  const isByteZeroRequest = !rangeHeader || rangeHeader === 'bytes=0-' || (rangeStart === 0 && rangeEnd === null);
+
   if (hostLower.endsWith('googlevideo.com')) {
     const cParam = (parsed.searchParams.get('c') || '').toUpperCase();
-    if (!forward['range'] || forward['range'] === 'bytes=0-') {
-      if (cParam === 'IOS') {
-        forward['range'] = 'bytes=0-1048575';
-      } else {
-        forward['range'] = 'bytes=0-';
-      }
-    }
 
     // Prevent 403 on c=IOS when range >= 1048576: upgrade to full stream if available
-    const rangeStart = forward['range'] ? parseInt((forward['range'].match(/bytes=(\d+)-/) || [])[1] || '0', 10) : 0;
-    if (cParam === 'IOS' && rangeStart >= 1048576 && options.targetId) {
-      let fullUrl = streamCache.get(options.targetId)?.fullUrl;
+    if (cParam === 'IOS' && rangeStart >= 1048576 && effectiveTargetId) {
+      let fullUrl = streamCache.get(effectiveTargetId)?.fullUrl;
       if (!fullUrl) {
         try {
-          const fullDetails = await resolveFullStreamViaYtDlp(options.targetId);
+          const fullPromise = inflightFullResolutions.get(effectiveTargetId) || resolveFullStreamViaYtDlp(effectiveTargetId);
+          const fullDetails = await fullPromise;
           if (fullDetails && fullDetails.url && fullDetails.url !== targetUrl) {
             fullUrl = fullDetails.url;
           }
@@ -769,6 +894,14 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, options 
       if (fullUrl && fullUrl !== targetUrl) {
         return handleAudioProxy(req, res, fullUrl, redirectsLeft, options);
       }
+    }
+
+    if (cParam === 'IOS') {
+      // Google Video c=IOS strictly returns 403 on open-ended ranges. Always bound the initial chunk <= 1048575.
+      const boundedEnd = (rangeEnd !== null) ? Math.min(rangeEnd, 1048575) : 1048575;
+      forward['range'] = `bytes=${rangeStart}-${boundedEnd}`;
+    } else if (isByteZeroRequest) {
+      forward['range'] = 'bytes=0-';
     }
 
     forward['origin'] = 'https://www.youtube.com';
@@ -807,9 +940,10 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, options 
       proxyRes.resume();
       // Automatic failover: if c=IOS hit 403 on Google Video, resolve full stream and proxy it
       const cParam = (parsed.searchParams.get('c') || '').toUpperCase();
-      if (proxyRes.statusCode === 403 && cParam === 'IOS' && options.targetId && redirectsLeft > 0) {
+      if (proxyRes.statusCode === 403 && cParam === 'IOS' && effectiveTargetId && redirectsLeft > 0) {
         try {
-          const fullDetails = await resolveFullStreamViaYtDlp(options.targetId);
+          const fullPromise = inflightFullResolutions.get(effectiveTargetId) || resolveFullStreamViaYtDlp(effectiveTargetId);
+          const fullDetails = await fullPromise;
           if (fullDetails && fullDetails.url && fullDetails.url !== targetUrl) {
             return handleAudioProxy(req, res, fullDetails.url, redirectsLeft - 1, options);
           }
@@ -846,6 +980,15 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, options 
       outHeaders['Cache-Control'] = 'no-cache, no-transform';
     }
 
+    const cParam = (parsed.searchParams.get('c') || '').toUpperCase();
+    const effectiveTotal = options.seamlessTotalLength || (effectiveTargetId && streamCache.get(effectiveTargetId)?.contentLength) || (outHeaders['content-range'] ? parseInt((outHeaders['content-range'].match(/\/(\d+)/) || [])[1], 10) : null);
+    if (effectiveTotal && cParam === 'IOS') {
+      const respStart = rangeStart;
+      const respEnd = (rangeEnd !== null) ? Math.min(rangeEnd, effectiveTotal - 1) : effectiveTotal - 1;
+      outHeaders['content-range'] = `bytes ${respStart}-${respEnd}/${effectiveTotal}`;
+      outHeaders['content-length'] = String(respEnd - respStart + 1);
+    }
+
     res.writeHead(proxyRes.statusCode || 200, outHeaders);
     if (typeof res.flushHeaders === 'function') {
       res.flushHeaders();
@@ -855,18 +998,18 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, options 
     }
 
     // Fast-burst initial 64KB chunk (containing MP4 ftyp + moov) without proxy buffering
-    let initialBytes = 0;
+    let bytesStreamed = 0;
     const FAST_BURST_THRESHOLD = 64 * 1024;
     let bursting = true;
 
     const onData = (chunk) => {
+      bytesStreamed += chunk.length;
       if (bursting) {
-        initialBytes += chunk.length;
         res.write(chunk);
         if (res.socket && typeof res.socket.uncork === 'function') {
           try { res.socket.uncork(); } catch (_) {}
         }
-        if (initialBytes >= FAST_BURST_THRESHOLD) {
+        if (bytesStreamed >= FAST_BURST_THRESHOLD) {
           bursting = false;
         }
       } else {
@@ -880,8 +1023,31 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, options 
     res.on('drain', () => {
       proxyRes.resume();
     });
-    proxyRes.on('end', () => {
-      res.end();
+    proxyRes.on('end', async () => {
+      // Seamless multi-tier stream continuity:
+      // If c=IOS reached the end of its 1MB burst on an open-ended request or request extending past 1MB,
+      // seamlessly pump the remaining bytes from Tier 2 fullUrl into the SAME response!
+      const totalStreamedOffset = rangeStart + bytesStreamed;
+      const wantsMoreBytes = (rangeEnd === null) || (rangeEnd >= totalStreamedOffset);
+      console.log(`[handleAudioProxy proxyRes end] isByteZeroRequest=${isByteZeroRequest} effectiveTotal=${effectiveTotal} bytesStreamed=${bytesStreamed} totalOffset=${totalStreamedOffset} wantsMoreBytes=${wantsMoreBytes} effectiveTargetId=${effectiveTargetId}`);
+      if (wantsMoreBytes && effectiveTotal && totalStreamedOffset < effectiveTotal && effectiveTargetId && !res.writableEnded) {
+        try {
+          let fullUrl = streamCache.get(effectiveTargetId)?.fullUrl;
+          if (!fullUrl) {
+            console.log(`[handleAudioProxy] Awaiting fullUrl for ${effectiveTargetId}...`);
+            const fullPromise = inflightFullResolutions.get(effectiveTargetId) || resolveFullStreamViaYtDlp(effectiveTargetId);
+            const fullDetails = await fullPromise;
+            fullUrl = fullDetails?.url;
+            console.log(`[handleAudioProxy] Resolved fullUrl for ${effectiveTargetId}: ${fullUrl ? 'YES' : 'NO'}`);
+          }
+          if (fullUrl && !res.writableEnded) {
+            return pumpRemainderFromUrl(req, res, fullUrl, totalStreamedOffset, effectiveTotal);
+          }
+        } catch (tier2Err) {
+          console.log(`[handleAudioProxy] Tier 2 resolution error:`, tier2Err.message);
+        }
+      }
+      if (!res.writableEnded) res.end();
     });
     proxyRes.on('error', () => {
       try { res.destroy(); } catch (e) {}
@@ -1145,59 +1311,140 @@ function parseYtmSongs(json) {
   return out;
 }
 
-function searchYouTubeMusic(query) {
+function searchYouTubeMusic(query, retryWithoutParams = true) {
   return new Promise((resolve, reject) => {
-    const reqBody = JSON.stringify({
+    const postPayload = (withParams) => {
+      const payloadObj = {
+        context: {
+          client: {
+            clientName: 'WEB_REMIX',
+            clientVersion: '1.20240424.01.00',
+            hl: 'en',
+            gl: 'US'
+          }
+        },
+        query: query
+      };
+      if (withParams) {
+        payloadObj.params = 'Eg-KAQwIABAAGAAgACgB';
+      }
+      return JSON.stringify(payloadObj);
+    };
+
+    const runSearch = (withParams) => {
+      const reqBody = postPayload(withParams);
+      const req = https.request({
+        hostname: 'music.youtube.com',
+        path: '/youtubei/v1/search',
+        method: 'POST',
+        agent: keepAliveHttpsAgent,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(reqBody),
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        },
+        timeout: 8000
+      }, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(data);
+            const songs = parseYtmSongs(json);
+            if (Array.isArray(songs) && songs.length > 0 && songs[0].id) {
+              const norm = normalizeTrackKey(query);
+              if (norm) {
+                idMapCache.set(norm, songs[0].id);
+                saveIdCacheToDisk();
+              }
+              return resolve(songs);
+            }
+            if (withParams && retryWithoutParams) {
+              return runSearch(false);
+            }
+            resolve(songs || []);
+          } catch (e) {
+            if (withParams && retryWithoutParams) {
+              return runSearch(false);
+            }
+            reject(e);
+          }
+        });
+      });
+
+      req.on('error', (err) => {
+        if (withParams && retryWithoutParams) {
+          return runSearch(false);
+        }
+        reject(err);
+      });
+      req.on('timeout', () => {
+        req.destroy();
+        if (withParams && retryWithoutParams) {
+          return runSearch(false);
+        }
+        reject(new Error('Timeout'));
+      });
+      req.write(reqBody);
+      req.end();
+    };
+
+    runSearch(true);
+  });
+}
+
+function searchYouTubeInnertubeWeb(query) {
+  return new Promise((resolve) => {
+    if (!query || typeof query !== 'string') return resolve([]);
+    const cleanQuery = query.trim();
+    const payload = JSON.stringify({
       context: {
         client: {
-          clientName: 'WEB_REMIX',
-          clientVersion: '1.20240424.01.00',
+          clientName: 'WEB',
+          clientVersion: '2.20240424.01.00',
           hl: 'en',
           gl: 'US'
         }
       },
-      query: query,
-      params: 'Eg-KAQwIABAAGAAgACgB'
+      query: cleanQuery
     });
 
-    const req = https.request({
-      hostname: 'music.youtube.com',
-      path: '/youtubei/v1/search',
+    const req = https.request('https://www.youtube.com/youtubei/v1/search', {
       method: 'POST',
       agent: keepAliveHttpsAgent,
+      family: 4,
       headers: {
         'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(reqBody),
+        'Content-Length': Buffer.byteLength(payload),
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       },
-      timeout: 8000
+      timeout: 6000
     }, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
         try {
-          const json = JSON.parse(data);
-          const songs = parseYtmSongs(json);
-          if (Array.isArray(songs) && songs.length > 0 && songs[0].id) {
-            const norm = normalizeTrackKey(query);
+          const matches = [...data.matchAll(/"videoId":"([a-zA-Z0-9_-]{11})"/g)].map(m => m[1]);
+          const uniqueIds = [...new Set(matches)];
+          if (uniqueIds.length > 0) {
+            const norm = normalizeTrackKey(cleanQuery);
             if (norm) {
-              idMapCache.set(norm, songs[0].id);
+              idMapCache.set(norm, uniqueIds[0]);
               saveIdCacheToDisk();
             }
+            return resolve(uniqueIds.map(id => ({ id, url: `https://www.youtube.com/watch?v=${id}` })));
           }
-          resolve(songs);
-        } catch (e) {
-          reject(e);
-        }
+        } catch (_) {}
+        resolve([]);
       });
     });
 
-    req.on('error', reject);
+    req.on('error', () => resolve([]));
     req.on('timeout', () => {
       req.destroy();
-      reject(new Error('Timeout'));
+      resolve([]);
     });
-    req.write(reqBody);
+    req.write(payload);
     req.end();
   });
 }
@@ -1302,9 +1549,38 @@ function searchITunes(query) {
   });
 }
 
-function searchSoundcloud(query, limit = 14) {
+async function searchSoundcloud(query, limit = 14) {
+  if (!query) return [];
+  // Fast in-process SoundCloud API v2 search (~400ms)
+  try {
+    const cid = await refreshSoundCloudClientId(false);
+    if (cid) {
+      const scUrl = `https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(query)}&limit=${limit}&client_id=${cid}`;
+      const scRes = await fetch(scUrl, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+        signal: AbortSignal.timeout(5000)
+      });
+      if (scRes.ok) {
+        const scData = await scRes.json();
+        const items = (scData && Array.isArray(scData.collection)) ? scData.collection : [];
+        if (items.length > 0) {
+          return items.map(item => ({
+            id: String(item.id || Math.random().toString(36).substring(2)),
+            title: item.title || 'Untitled',
+            artist: (item.user && item.user.username) || item.uploader || 'Unknown Artist',
+            duration: Math.round((item.duration || 0) / 1000),
+            thumbnail: item.artwork_url || (item.user && item.user.avatar_url) || '',
+            url: item.permalink_url || '',
+            platform: 'soundcloud'
+          }));
+        }
+      }
+    }
+  } catch (scErr) {
+    console.warn('[searchSoundcloud] Direct API v2 note:', scErr.message);
+  }
+
   return new Promise((resolve) => {
-    if (!query) return resolve([]);
     const args = [
       `scsearch${limit}:${query}`,
       '--dump-single-json',
@@ -1703,10 +1979,12 @@ const server = http.createServer(async (req, res) => {
 
       // Direct audio streaming pipeline straight into HTTP response
       const determinedMime = streamDetails.mimeType ? streamDetails.mimeType.split(';')[0].trim() : (streamDetails.itag === 251 ? 'audio/webm' : 'audio/mp4');
+      const totalLen = streamDetails.contentLength ? parseInt(streamDetails.contentLength, 10) : null;
       return handleAudioProxy(req, res, rawStreamUrl, 5, {
         isStreamEndpoint: true,
         contentType: determinedMime,
-        targetId: target
+        targetId: streamDetails.resolvedId || target,
+        seamlessTotalLength: totalLen
       });
     } catch (err) {
       if (reqUrl.searchParams.get('format') === 'json') {
