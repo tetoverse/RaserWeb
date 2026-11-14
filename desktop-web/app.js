@@ -2896,6 +2896,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   renderPresets();
 
   function initAudioContext() {
+    if (el.nativeAudio && !el.nativeAudio.crossOrigin) {
+      el.nativeAudio.crossOrigin = 'anonymous';
+    }
     audioEngine.init(el.nativeAudio);
     
     if (audioEngine.ctx && audioEngine.ctx.state === 'suspended') {
@@ -3814,6 +3817,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       document.body.classList.add('hidden-window');
       if (typeof updateCoverAnimVisibility === 'function') updateCoverAnimVisibility();
       window.electronAPI?.clearWebFrameCache?.();
+      if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
+        window.__TAURI__.core.invoke('trim_working_set').catch(() => {});
+      }
     } else {
       document.body.classList.remove('app-paused');
       document.body.classList.remove('hidden-window');
@@ -3847,6 +3853,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (window.electronAPI && window.electronAPI.onWindowVisibility) {
     window.electronAPI.onWindowVisibility(visible => handleVisibilityChange(visible));
   }
+  window.__raserSetVisibility = function(visible) {
+    handleVisibilityChange(visible);
+  };
 
   const setUnfocused = (unfocused) => {
     if (unfocused === document.body.classList.contains('unfocused')) return;

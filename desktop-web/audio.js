@@ -655,9 +655,37 @@
       if (hidden) this.setAnalyserEnabled(false);
     }
 
+    _fillSyntheticFrequencies(buffer) {
+      if (!buffer) return;
+      const now = Date.now() * 0.004;
+      const len = buffer.length;
+      for (let i = 0; i < len; i++) {
+        const wave = Math.sin(now + i * 0.35) * 0.5 + 0.5;
+        const wave2 = Math.cos(now * 1.3 + i * 0.2) * 0.3 + 0.3;
+        const decay = Math.max(0.2, 1 - (i / len));
+        buffer[i] = Math.round((wave * 0.6 + wave2 * 0.4) * decay * 190 + 30);
+      }
+    }
+
     getFrequencyData(buffer) {
-      if (!this._analyserConnected) this.setAnalyserEnabled(true);
-      if (this.analyserNode) this.analyserNode.getByteFrequencyData(buffer);
+      if (!buffer) return;
+      if (this.analyserNode) {
+        if (!this._analyserConnected) this.setAnalyserEnabled(true);
+        this.analyserNode.getByteFrequencyData(buffer);
+        let hasData = false;
+        for (let i = 0; i < buffer.length; i++) {
+          if (buffer[i] > 0) {
+            hasData = true;
+            break;
+          }
+        }
+        if (hasData) return;
+      }
+      if (this._attachedElement && !this._attachedElement.paused && (this._attachedElement.currentTime || 0) > 0) {
+        this._fillSyntheticFrequencies(buffer);
+      } else {
+        buffer.fill(0);
+      }
     }
 
     getTimeDomainData(buffer) {
