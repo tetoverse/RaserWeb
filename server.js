@@ -60,7 +60,7 @@ loadStreamCacheFromDisk();
 const keepAliveHttpsAgent = new https.Agent({ keepAlive: true, maxSockets: 64, timeout: 60000 });
 const keepAliveHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 64, timeout: 60000 });
 
-let serverScClientId = '0cee5ACoYsXOCiDf1bzxpXPKpZmof2hI';
+let serverScClientId = 'qLcgHhXgeEFFaSolTB9I71LBsqncsD93';
 let serverScClientIdTs = Date.now();
 
 async function refreshSoundCloudClientId(force = false) {
@@ -69,12 +69,13 @@ async function refreshSoundCloudClientId(force = false) {
   }
   try {
     const html = await fetch('https://soundcloud.com', {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+      signal: AbortSignal.timeout(3500)
     }).then(r => r.text());
     const scripts = [...html.matchAll(/src="(https:\/\/a-v2\.sndcdn\.com\/assets\/[^"]+\.js)"/g)].map(m => m[1]);
     for (let i = scripts.length - 1; i >= Math.max(0, scripts.length - 5); i--) {
       try {
-        const js = await fetch(scripts[i]).then(r => r.text());
+        const js = await fetch(scripts[i], { signal: AbortSignal.timeout(3500) }).then(r => r.text());
         const m = js.match(/client_id\s*[:=]\s*["']([a-zA-Z0-9]{32})["']/);
         if (m && m[1]) {
           serverScClientId = m[1];
@@ -162,7 +163,8 @@ async function fetchDirectSoundCloudStream(scUrlOrId, queryFallback) {
   // Seamless smart fallback to YouTube search if direct soundcloud stream is restricted
   if (queryFallback) {
     try {
-      return await resolveAudioStream(queryFallback, 'youtube');
+      const q = queryFallback.startsWith('ytsearch') ? queryFallback : `ytsearch1:${queryFallback}`;
+      return await resolveAudioStream(q, 'youtube');
     } catch (_) {}
   }
   return null;
@@ -183,7 +185,8 @@ function resolveAudioStream(target, platform = '', queryFallback = '') {
 
   const isId = /^[\w-]{11}$/.test(cleanTarget);
   const targetId = isId ? cleanTarget : (extractYouTubeId(cleanTarget) || null);
-  const targetUrl = targetId ? `https://www.youtube.com/watch?v=${targetId}` : cleanTarget;
+  const isUrl = cleanTarget.startsWith('http://') || cleanTarget.startsWith('https://');
+  const targetUrl = targetId ? `https://www.youtube.com/watch?v=${targetId}` : (isUrl || cleanTarget.startsWith('ytsearch') ? cleanTarget : `ytsearch1:${cleanTarget}`);
   const cacheKey = targetId || cleanTarget;
 
   const cached = streamCache.get(cacheKey);
@@ -995,13 +998,60 @@ const server = http.createServer(async (req, res) => {
       try {
         let payload = {};
         try { payload = JSON.parse(body || '{}'); } catch (_) {}
-        const seed = (payload.seeds && payload.seeds[0]) || 'chill pop hits 2026';
-        let results = await searchYouTubeMusic(seed);
-        if (!results || results.length === 0) results = await searchYouTubeMusic('top hits 2026');
-        if (!results || results.length === 0) results = await searchITunes('popular songs');
+
+        // Gather all queries from artists and seeds
+        let queries = [];
+        if (Array.isArray(payload.artists) && payload.artists.length > 0) {
+          queries.push(...payload.artists.map(a => String(a || '').trim()).filter(Boolean));
+        }
+        if (Array.isArray(payload.seeds)) {
+          for (const s of payload.seeds) {
+            if (typeof s === 'string' && s.trim()) {
+              queries.push(s.trim());
+            } else if (s && typeof s === 'object') {
+              if (s.artist && s.title) queries.push(`${s.artist} ${s.title}`);
+              else if (s.artist) queries.push(s.artist);
+              else if (s.title) queries.push(s.title);
+            }
+          }
+        }
+        queries = [...new Set(queries.filter(Boolean))];
+
+        const primaryQuery = queries[0] || 'chill pop hits';
+        const secondaryQuery = queries[1] || queries[2] || null;
+
+        let results = await searchYouTubeMusic(primaryQuery);
+        if (secondaryQuery && (!results || results.length < 8)) {
+          try {
+            const extra = await searchYouTubeMusic(secondaryQuery);
+            if (extra && extra.length > 0) {
+              results = [...(results || []), ...extra];
+            }
+          } catch (_) {}
+        }
+        if (!results || results.length === 0) {
+          try {
+            results = await searchITunes(primaryQuery);
+          } catch (_) {}
+        }
+        if (!results || results.length === 0) {
+          results = await searchYouTubeMusic('top hits 2026');
+        }
+
         const formatted = (results || []).map(formatTrack).filter(Boolean);
+        // Deduplicate tracks
+        const seen = new Set();
+        const unique = [];
+        for (const t of formatted) {
+          const key = (t.id || t.title || '').toLowerCase();
+          if (!seen.has(key)) {
+            seen.add(key);
+            unique.push(t);
+          }
+        }
+
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, tracks: formatted }));
+        res.end(JSON.stringify({ success: true, tracks: unique }));
       } catch (e) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, tracks: [] }));
@@ -1094,7 +1144,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     try {
-      const rawStreamUrl = await resolveAudioStream(target, platform, queryFallback);
+      const effectivePlatform = isSoundcloud ? 'youtube' : platform;
+      const rawStreamUrl = await resolveAudioStream(target, effectivePlatform, queryFallback);
       const isHls = rawStreamUrl.includes('.m3u8');
       const proxiedUrl = `${serverOrigin}/api/audio-proxy?url=${encodeURIComponent(rawStreamUrl)}`;
       const streamUrl = isHls ? rawStreamUrl : proxiedUrl;
