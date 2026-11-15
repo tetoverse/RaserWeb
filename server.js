@@ -1667,9 +1667,133 @@ function cleanTrackTitle(title) {
     .trim();
 }
 
-async function fetchLyricsFromLrclib(title, artist, duration) {
+async function computeSmartIntroOffset(videoId, lrcText) {
+  if (!videoId || !/^[\w-]{11}$/.test(videoId) || !lrcText || typeof lrcText !== 'string') {
+    return 0;
+  }
+
+  try {
+    const payload = JSON.stringify({
+      context: {
+        client: {
+          clientName: 'IOS',
+          clientVersion: '20.10.4',
+          deviceMake: 'Apple',
+          deviceModel: 'iPhone16,2',
+          userAgent: 'com.google.ios.youtube/20.10.4',
+          osName: 'iOS',
+          osVersion: '18.3.2.22D82',
+          hl: 'en',
+          gl: 'US'
+        }
+      },
+      videoId: videoId
+    });
+
+    const playerRes = await new Promise((resolve) => {
+      const req = https.request('https://www.youtube.com/youtubei/v1/player', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+          'User-Agent': 'com.google.ios.youtube/20.10.4',
+          'X-YouTube-Client-Name': '5',
+          'X-YouTube-Client-Version': '20.10.4'
+        },
+        timeout: 4000
+      }, (res) => {
+        if (res.statusCode >= 400) { res.resume(); return resolve(null); }
+        let body = '';
+        res.on('data', c => { body += c; });
+        res.on('end', () => {
+          try { resolve(JSON.parse(body)); } catch (_) { resolve(null); }
+        });
+      });
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => { req.destroy(); resolve(null); });
+      req.write(payload);
+      req.end();
+    });
+
+    const tracks = playerRes?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+    if (!Array.isArray(tracks) || tracks.length === 0 || !tracks[0].baseUrl) {
+      return 0;
+    }
+
+    const captionUrl = tracks[0].baseUrl + '&fmt=json3';
+    const captionRes = await new Promise((resolve) => {
+      const req = https.request(captionUrl, {
+        headers: { 'User-Agent': 'com.google.ios.youtube/20.10.4' },
+        timeout: 3500
+      }, (res) => {
+        if (res.statusCode >= 400) { res.resume(); return resolve(null); }
+        let body = '';
+        res.on('data', c => { body += c; });
+        res.on('end', () => {
+          try { resolve(JSON.parse(body)); } catch (_) { resolve(null); }
+        });
+      });
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => { req.destroy(); resolve(null); });
+      req.end();
+    });
+
+    const events = captionRes?.events;
+    if (!Array.isArray(events) || events.length === 0) return 0;
+
+    const captions = [];
+    for (const ev of events) {
+      if (Array.isArray(ev.segs)) {
+        let t = ev.segs.map(s => s.utf8 || '').join('').replace(/\r?\n/g, ' ').replace(/[♪♫\[\]\(\)]/g, '').trim().toLowerCase();
+        if (t.length >= 3) {
+          captions.push({ text: t, time: (ev.tStartMs || 0) / 1000 });
+        }
+      }
+    }
+    if (captions.length === 0) return 0;
+
+    // Extract first candidate lines from LRC
+    const lrcLines = [];
+    const tagRegex = /\[(\d{1,2}):(\d{1,2}(?:\.\d{1,3})?)\]/g;
+    const lines = lrcText.split(/\r?\n/);
+    for (const line of lines) {
+      tagRegex.lastIndex = 0;
+      const m = tagRegex.exec(line);
+      if (m) {
+        const time = parseInt(m[1], 10) * 60 + parseFloat(m[2]);
+        const clean = line.replace(/\[.*?\]/g, '').replace(/<[^>]+>/g, '').replace(/[♪♫\[\]\(\)]/g, '').trim().toLowerCase();
+        if (clean.length >= 3 && !/^(instrumental|intro|solo|music|break)$/i.test(clean)) {
+          lrcLines.push({ text: clean, time: time });
+          if (lrcLines.length >= 8) break;
+        }
+      }
+    }
+    if (lrcLines.length === 0) return 0;
+
+    // Match first LRC lines with YouTube caption events
+    for (const lrc of lrcLines.slice(0, 5)) {
+      const words = lrc.text.match(/\b[a-z0-9]{3,}\b/gi) || [];
+      if (words.length === 0) continue;
+      for (const cap of captions.slice(0, 20)) {
+        const matchedCount = words.filter(w => cap.text.includes(w)).length;
+        if (matchedCount >= Math.min(2, words.length)) {
+          const diff = cap.time - lrc.time;
+          // Only apply if diff is noticeable (>= 0.4s) and reasonable (within +/- 90s)
+          if (Math.abs(diff) >= 0.4 && Math.abs(diff) <= 90) {
+            return Math.round(diff * 10) / 10;
+          }
+          return 0;
+        }
+      }
+    }
+  } catch (_) {}
+  return 0;
+}
+
+
+async function fetchLyricsFromLrclib(title, artist, duration, videoId) {
   const cleanTitle = cleanTrackTitle(title) || title;
-  const cacheKey = `${cleanTitle.toLowerCase()}:::${(artist || '').toLowerCase()}`;
+  const cacheKey = `${cleanTitle.toLowerCase()}:::${(artist || '').toLowerCase()}:::${videoId || ''}`;
   const now = Date.now();
   if (lyricsCache.has(cacheKey)) {
     const entry = lyricsCache.get(cacheKey);
@@ -1741,10 +1865,18 @@ async function fetchLyricsFromLrclib(title, artist, duration) {
     }
   }
 
+  let introOffset = 0;
+  if (finalLyrics && isSynced && videoId) {
+    try {
+      introOffset = await computeSmartIntroOffset(videoId, finalLyrics);
+    } catch (_) {}
+  }
+
   const responseData = {
     success: !!finalLyrics,
     lyrics: finalLyrics || '',
     isSynced: isSynced,
+    introOffset: introOffset || 0,
     trackName: result ? result.trackName : cleanTitle,
     artistName: result ? result.artistName : artist
   };
@@ -2290,6 +2422,7 @@ const server = http.createServer(async (req, res) => {
     const title = (reqUrl.searchParams.get('title') || '').trim();
     const artist = (reqUrl.searchParams.get('artist') || '').trim();
     const duration = reqUrl.searchParams.get('duration');
+    const videoId = (reqUrl.searchParams.get('id') || reqUrl.searchParams.get('videoId') || '').trim();
 
     if (!title) {
       res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
@@ -2298,7 +2431,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     try {
-      const lyricsData = await fetchLyricsFromLrclib(title, artist, duration);
+      const lyricsData = await fetchLyricsFromLrclib(title, artist, duration, videoId);
       res.writeHead(200, {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*',
