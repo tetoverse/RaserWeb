@@ -8694,7 +8694,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     const now = Date.now();
     if (el.nativeAudio && el.nativeAudio.currentTime > 3 && (now - lastPrevClickTime > 2000)) {
       lastPrevClickTime = now;
-      el.nativeAudio.currentTime = 0;
+      safeSeekTo(0);
+      if (state.isPlaying && el.nativeAudio.paused) {
+        playSmooth();
+      }
       return;
     }
     lastPrevClickTime = now;
@@ -8722,7 +8725,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (state.queue.length === 0) return;
 
     if (state.isShuffle) {
-      if (el.nativeAudio) el.nativeAudio.currentTime = 0;
+      if (el.nativeAudio) {
+        safeSeekTo(0);
+        if (state.isPlaying && el.nativeAudio.paused) playSmooth();
+      }
       return;
     }
 
@@ -8731,7 +8737,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (state.repeatMode === 'all') {
         prevIdx = state.queue.length - 1;
       } else {
-        if (el.nativeAudio) el.nativeAudio.currentTime = 0;
+        if (el.nativeAudio) {
+          safeSeekTo(0);
+          if (state.isPlaying && el.nativeAudio.paused) playSmooth();
+        }
         return;
       }
     }
@@ -14949,6 +14958,7 @@ function updateNavIndicator(animate) {
       if (el.playbarSpinner) el.playbarSpinner.classList.remove('hidden');
       if (el.playIcon) el.playIcon.classList.add('hidden');
       if (el.pauseIcon) el.pauseIcon.classList.add('hidden');
+      if (typeof startButtonShapeSpinners === 'function') startButtonShapeSpinners();
       setPlayPauseState(true, true);
     } else {
       if (el.btnPlayPause) el.btnPlayPause.classList.remove('buffering');
