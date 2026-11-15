@@ -4848,11 +4848,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     state.history = state.history.filter(t => !isSameTrack(t, track));
     state.history.unshift(track);
     if (state.history.length > 100) state.history.pop();
-    localStorage.setItem('devsize_history', JSON.stringify(state.history));
+    const historySnapshot = state.history;
+    setTimeout(() => {
+      try { localStorage.setItem('devsize_history', JSON.stringify(historySnapshot)); } catch (_) {}
+    }, 0);
     updateHistoryBadge();
     if (state.currentView === 'history') renderHistoryView();
 
-    updateNowPlayingUI(track);
+    requestAnimationFrame(() => updateNowPlayingUI(track));
     updatePlayPauseButton(false, true);
 
     if (!track.thumbnail && track.platform !== 'local') {
@@ -5004,7 +5007,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       el.nativeAudio.preload = 'auto';
-      const playUrl = `${getApiBaseUrl()}/api/stream?id=${encodeURIComponent(resolvedId || track.id || '')}&title=${encodeURIComponent(track.title || '')}&artist=${encodeURIComponent(track.artist || '')}${track.url ? '&url=' + encodeURIComponent(track.url) : ''}${track.platform ? '&platform=' + encodeURIComponent(track.platform) : ''}`;
+      const playUrl = `${getApiBaseUrl()}/api/stream?id=${encodeURIComponent(resolvedId || track.id || '')}&title=${encodeURIComponent(track.title || '')}&artist=${encodeURIComponent(track.artist || '')}${track.duration ? '&duration=' + encodeURIComponent(track.duration) : ''}${track.url ? '&url=' + encodeURIComponent(track.url) : ''}${track.platform ? '&platform=' + encodeURIComponent(track.platform) : ''}`;
       el.nativeAudio.src = playUrl;
       playSmooth();
       applyAudioSettings();
@@ -5336,17 +5339,22 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   function tagWrappedLyricRows(container) {
     if (!container || !container.clientHeight) return;
+    const updates = [];
     container.querySelectorAll('.lyric-line').forEach((lineEl) => {
       const words = lineEl.querySelectorAll('.lyric-word');
       if (words.length > 1) {
         let rowIdx = 0;
         let lastTop = words[0].offsetTop;
         words.forEach((w) => {
-          if (w.offsetTop > lastTop + 4) { rowIdx++; lastTop = w.offsetTop; }
-          w.style.setProperty('--subline', String(Math.min(rowIdx, 3)));
+          const top = w.offsetTop;
+          if (top > lastTop + 4) { rowIdx++; lastTop = top; }
+          updates.push([w, String(Math.min(rowIdx, 3))]);
         });
       }
     });
+    for (let i = 0; i < updates.length; i++) {
+      updates[i][0].style.setProperty('--subline', updates[i][1]);
+    }
   }
 
   function splitLyricParensToEnd(rawText) {
@@ -5706,8 +5714,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     state.forceLyricsScroll = true;
     state.forceSnapLyrics = true;
     if (el.nativeAudio) updateSyncedLyricsHighlight(el.nativeAudio.currentTime || 0);
-    renderMiniLyrics();
-    tagWrappedLyricRows(el.lyricsContainer);
+    setTimeout(() => {
+      renderMiniLyrics();
+      requestAnimationFrame(() => tagWrappedLyricRows(el.lyricsContainer));
+    }, 0);
   }
 
   function renderMiniLyrics() {
@@ -14109,6 +14119,7 @@ function renderClickableArtists(container, rawArtist, hintTrack = null) {
       id: t.resolvedId || t.id || '',
       title: t.title || '',
       artist: t.artist || '',
+      duration: t.duration || 0,
       url: t.url || ''
     }));
     fetch(`${getApiBaseUrl()}/api/prewarm-ids`, {
