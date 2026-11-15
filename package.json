@@ -16,7 +16,8 @@
   "author": "Hamza / YourDarkstFear",
   "license": "MIT",
   "dependencies": {
-    "@distube/ytdl-core": "^4.16.4"
+    "@distube/ytdl-core": "^4.16.4",
+    "hang-trace": "^1.1.1"
   },
   "devDependencies": {
     "playwright": "^1.65.0"

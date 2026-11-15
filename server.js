@@ -1,3 +1,11 @@
+let trace = (p) => p;
+let wrapAsync = (fn) => fn;
+try {
+  const ht = require('hang-trace');
+  if (ht && typeof ht.trace === 'function') trace = ht.trace;
+  if (ht && typeof ht.wrapAsync === 'function') wrapAsync = ht.wrapAsync;
+} catch (_) {}
+
 const http = require('http');
 const https = require('https');
 const dns = require('dns');
@@ -2431,7 +2439,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     try {
-      const lyricsData = await fetchLyricsFromLrclib(title, artist, duration, videoId);
+      const lyricsData = await trace(fetchLyricsFromLrclib(title, artist, duration, videoId), { label: 'fetchLyricsFromLrclib', timeoutMs: 6000 });
       res.writeHead(200, {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*',
