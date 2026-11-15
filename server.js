@@ -2195,11 +2195,11 @@ const server = http.createServer(async (req, res) => {
       'Cache-Control': 'no-cache'
     });
     return res.end(JSON.stringify({
-      version: '1.0.0',
-      min_version: '1.0.0',
+      version: '1.1.1',
+      min_version: '1.1.1',
       mandatory: true,
-      download_url: 'https://github.com/YourDarkstFear/RaserNative/releases/latest/download/RaserNative-Setup.exe',
-      notes: 'Raser Native - Performans optimizasyonları ve hata düzeltmeleri.',
+      download_url: 'https://github.com/tetoverse/Raser/releases/latest/download/Raser_1.1.1_x64-setup.exe',
+      notes: 'Raser v1.1.1 - Pure Rust Native Audio Core, ultra-düşük RAM optimizasyonu ve Windows Taskbar kontrolleri.',
       pub_date: new Date().toISOString()
     }));
   }
