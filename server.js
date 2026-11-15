@@ -390,8 +390,36 @@ function resolveFullStreamViaYtDlp(targetId, cleanTarget = '', isUrl = false) {
 
     let streamUrl = null;
 
-    // 1. Attempt local yt-dlp first (tvhtml5 + node js-runtime)
+    // 0. Try always-on local yt_resolver daemon (127.0.0.1:3851) first to avoid Python startup cost
     try {
+      streamUrl = await new Promise((resolveDaemon, rejectDaemon) => {
+        const dReq = http.get(`http://127.0.0.1:3851/resolve?url=${encodeURIComponent(fallbackTarget)}`, { timeout: 12000 }, (dRes) => {
+          let body = '';
+          dRes.on('data', c => body += c);
+          dRes.on('end', () => {
+            try {
+              const j = JSON.parse(body);
+              if (j && j.success && j.url && j.url.startsWith('https://')) {
+                return resolveDaemon(j.url);
+              }
+              rejectDaemon(new Error(j?.error || 'Daemon returned no url'));
+            } catch (e) {
+              rejectDaemon(e);
+            }
+          });
+        });
+        dReq.on('error', rejectDaemon);
+        dReq.on('timeout', () => {
+          dReq.destroy();
+          rejectDaemon(new Error('Daemon timeout'));
+        });
+      });
+    } catch (_) {
+      streamUrl = null;
+    }
+
+    // 1. Attempt local yt-dlp CLI if daemon was unavailable
+    if (!streamUrl) try {
       streamUrl = await new Promise((resolveYt, rejectYt) => {
         execFile('yt-dlp', ytdlpArgs, { timeout: 20000 }, (err, stdout) => {
           if (!err && stdout && stdout.trim().startsWith('https://')) {
