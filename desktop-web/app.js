@@ -8164,14 +8164,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     const curToken = ++smoothFadeToken;
     isPauseFading = false;
     state._intentionalPause = false;
-    state._isWaitingForData = false;
+    const isAudioBuffering = !!(el.nativeAudio && (el.nativeAudio.readyState < 3 || el.nativeAudio.seeking || state._isWaitingForData));
     state.isPlaying = true;
     document.body.classList.add('is-playing');
-    setPlayPauseState(true, true);
-    if (el.btnPlayPause) el.btnPlayPause.classList.remove('buffering');
-    if (el.playbarSpinner) el.playbarSpinner.classList.add('hidden');
-    if (el.playIcon) el.playIcon.classList.remove('hidden');
-    if (el.pauseIcon) el.pauseIcon.classList.remove('hidden');
+    if (isAudioBuffering) {
+      updatePlayPauseButton(true, true);
+    } else {
+      setPlayPauseState(true, true);
+      if (el.btnPlayPause) el.btnPlayPause.classList.remove('buffering');
+      if (el.playbarSpinner) el.playbarSpinner.classList.add('hidden');
+      if (el.playIcon) el.playIcon.classList.remove('hidden');
+      if (el.pauseIcon) el.pauseIcon.classList.remove('hidden');
+    }
 
     initAudioContext();
     if (audioEngine && audioEngine.ctx && (audioEngine.ctx.state === 'suspended' || audioEngine.ctx.state === 'interrupted')) {

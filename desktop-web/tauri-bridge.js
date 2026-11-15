@@ -191,6 +191,7 @@
         _isLoading = true;
         _hasEnded = false;
         audio.dispatchEvent(new Event('loadstart'));
+        audio.dispatchEvent(new Event('waiting'));
 
         let streamUrl = _currentSrc;
         if (streamUrl.startsWith('file:///')) {
@@ -230,6 +231,9 @@
           audio.dispatchEvent(new Event('durationchange'));
           audio.dispatchEvent(new Event('canplay'));
           audio.dispatchEvent(new Event('canplaythrough'));
+          if (_isPlaying) {
+            audio.dispatchEvent(new Event('playing'));
+          }
         }).catch((err) => {
           if (loadToken !== currentLoadToken) return;
           console.warn('[RustAudioCore] load error:', err);
@@ -319,7 +323,11 @@
       _isPlaying = true;
       _hasEnded = false;
       audio.dispatchEvent(new Event('play'));
-      audio.dispatchEvent(new Event('playing'));
+      if (_isLoading) {
+        audio.dispatchEvent(new Event('waiting'));
+      } else {
+        audio.dispatchEvent(new Event('playing'));
+      }
       invoke('taskbar_playback_state', { playing: true }).catch(() => {});
       return invoke('rust_audio_play').then(() => {}).catch(e => {
         _isPlaying = false;
