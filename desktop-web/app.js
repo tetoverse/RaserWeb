@@ -17705,7 +17705,7 @@ function bindCoverHoldZoom(wrapEl) {
   }
 
   function setCoverRotationRate(isPlaying) {
-    if (m3c) m3c.targetRate = isPlaying ? 1 : 0.25;
+    if (m3c) m3c.targetRate = isPlaying ? 1 : 0;
     if (typeof m3cEnabled === 'function' && m3cEnabled()) m3cStart();
   }
 
@@ -17821,8 +17821,9 @@ function bindCoverHoldZoom(wrapEl) {
     }
     ctx.closePath();
     ctx.clip();
-    const heroPath = document.getElementById('m3-hero-shape-path');
-    if (heroPath && document.body.classList.contains('m3-hero-covers-on')) {
+    const heroPath = m3c.heroPath || (m3c.heroPath = document.getElementById('m3-hero-shape-path'));
+    const isHomeActive = !el.viewHome || el.viewHome.classList.contains('active');
+    if (heroPath && isHomeActive && document.body.classList.contains('m3-hero-covers-on')) {
       const baseScale = (COVER_PX / 2) / 160 * 1.02;
       let heroD = '';
       for (let k = 0; k <= K; k++) {
@@ -17833,7 +17834,11 @@ function bindCoverHoldZoom(wrapEl) {
         if (k === 0) heroD += `M ${nx.toFixed(4)} ${ny.toFixed(4)}`;
         else heroD += ` L ${nx.toFixed(4)} ${ny.toFixed(4)}`;
       }
-      heroPath.setAttribute('d', heroD + ' Z');
+      const nextD = heroD + ' Z';
+      if (m3c.lastHeroD !== nextD) {
+        m3c.lastHeroD = nextD;
+        heroPath.setAttribute('d', nextD);
+      }
     }
     if (m3c.imgReady) {
       const iw = m3c.img.naturalWidth;
@@ -17842,14 +17847,21 @@ function bindCoverHoldZoom(wrapEl) {
       const imgSize = Math.ceil(currentCover * 1.06);
       ctx.drawImage(m3c.img, (iw - side) / 2, (ih - side) / 2, side, side, cx - imgSize / 2, cy - imgSize / 2, imgSize, imgSize);
     } else {
-      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--md-sys-color-surface-container-highest-solid') || '#444';
+      if (!m3c.cachedSurfaceColor || now - (m3c.lastColorCheck || 0) > 2000) {
+        m3c.cachedSurfaceColor = getComputedStyle(document.documentElement).getPropertyValue('--md-sys-color-surface-container-highest-solid') || '#444';
+      }
+      ctx.fillStyle = m3c.cachedSurfaceColor;
       ctx.fillRect(0, 0, CANVAS_PX, CANVAS_PX);
     }
     ctx.restore();
     const audio = el.nativeAudio;
     const dur = audio && isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
     const p = dur ? Math.min(1, Math.max(0, audio.currentTime / dur)) : 0;
-    const primary = (getComputedStyle(document.documentElement).getPropertyValue('--md-sys-color-primary') || '#d0bcff').trim();
+    if (!m3c.cachedPrimaryColor || now - (m3c.lastColorCheck || 0) > 1500) {
+      m3c.cachedPrimaryColor = (cachedPrimaryColor || getComputedStyle(document.documentElement).getPropertyValue('--md-sys-color-primary') || '#d0bcff').trim();
+      m3c.lastColorCheck = now;
+    }
+    const primary = cachedPrimaryColor || m3c.cachedPrimaryColor || '#d0bcff';
     const STEPS = 240;
     const ringPoint = (phi, wave) => {
       const r = radiusAt(phi - rot) + RING_GAP + RING_W / 2 + wave;
@@ -17884,20 +17896,33 @@ function bindCoverHoldZoom(wrapEl) {
   }
   function m3cLoop(now) {
     m3c.raf = 0;
-    if (!m3cEnabled() || document.hidden) return;
+    if (!m3cEnabled() || document.hidden || !state.isWindowVisible) return;
 
     const targetHover = m3c.isHovered ? 1 : 0;
     const diff = targetHover - m3c.hoverProgress;
     const isHoverAnimating = Math.abs(diff) > 0.002;
+
+    m3c.targetRate = state.isPlaying ? 1 : 0;
+    const rateDiff = m3c.targetRate - m3c.rotRate;
+    const isRateAnimating = Math.abs(rateDiff) > 0.01;
+
+    // Throttle to ~30 FPS when not actively hover-transitioning to halve CPU/GPU load
+    if (!isHoverAnimating && m3c.lastDraw && now - m3c.lastDraw < 32) {
+      if (state.isPlaying || isRateAnimating) {
+        m3c.raf = requestAnimationFrame(m3cLoop);
+      }
+      return;
+    }
+    m3c.lastDraw = now;
+
     if (isHoverAnimating) {
-      m3c.hoverProgress += diff * 0.2;
+      m3c.hoverProgress += diff * 0.28;
     } else {
       m3c.hoverProgress = targetHover;
     }
 
-    const rateDiff = m3c.targetRate - m3c.rotRate;
-    if (Math.abs(rateDiff) > 0.01) {
-      m3c.rotRate += rateDiff * 0.1;
+    if (isRateAnimating) {
+      m3c.rotRate += rateDiff * 0.14;
     } else {
       m3c.rotRate = m3c.targetRate;
     }
@@ -17912,15 +17937,19 @@ function bindCoverHoldZoom(wrapEl) {
     if (state.isPlaying) m3c.phase += 0.0075 * delta;
 
     m3cDraw(now);
-    m3c.raf = requestAnimationFrame(m3cLoop);
+    if (state.isPlaying || isHoverAnimating || isRateAnimating || m3c.rotRate > 0.005) {
+      m3c.raf = requestAnimationFrame(m3cLoop);
+    } else {
+      m3c.last = 0;
+    }
   }
-  function m3cStart() { if (m3c && !m3c.raf) m3c.raf = requestAnimationFrame(m3cLoop); }
+  function m3cStart() { if (m3c && !m3c.raf) { m3c.last = performance.now(); m3c.raf = requestAnimationFrame(m3cLoop); } }
   function applyM3Cover() {
     const on = m3cEnabled();
     document.body.classList.toggle('m3-cover-on', on);
     ensureM3cCoverAnimation();
     if (on) {
-      m3c.targetRate = state.isPlaying ? 1 : 0.25;
+      m3c.targetRate = state.isPlaying ? 1 : 0;
       m3cDraw(performance.now());
       m3cStart();
     } else {
