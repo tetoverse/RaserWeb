@@ -5011,6 +5011,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       // Supplementary stream-info resolution in background (for caching / metadata only, never disrupt playing stream!)
       (async () => {
         try {
+          if (window.electronAPI && window.electronAPI.isTauri) {
+            // Under Tauri, Rust AudioCore handles stream fetching, decoding, and disk caching directly.
+            // Avoid redundant background fetch that could interfere with active playback.
+            return;
+          }
           const qQuality = encodeURIComponent(localStorage.getItem('riff_audio_quality') || 'medium');
           const qSearch = encodeURIComponent(track.searchQuery || ((track.artist ? track.artist + ' - ' : '') + track.title));
           const streamInfoUrl = `${getApiBaseUrl()}/api/stream-info?url=${encodeURIComponent(resolvedUrl || '')}&id=${encodeURIComponent(resolvedId || '')}&platform=${track.platform || state.platform || 'ytmusic'}&title=${encodeURIComponent(track.title || '')}&artist=${encodeURIComponent(track.artist || '')}&duration=${encodeURIComponent(track.duration || 0)}&thumbnail=${encodeURIComponent(track.thumbnail || '')}&quality=${qQuality}&q=${qSearch}`;
@@ -8677,6 +8682,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
       }
 
+      if (window.electronAPI && window.electronAPI.isTauri) {
+        if (el.nativeAudio && (!el.nativeAudio.paused || el.nativeAudio.readyState === 1)) {
+          return;
+        }
+      }
+
       delete cur._preloadedStreamUrl;
       const retryStage = cur._errorRetryStage || 0;
 
@@ -8764,6 +8775,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     function watchPlaybackStall() {
       clearPlaybackStallTimer();
+      // In Tauri mode, audio streaming, disk caching and playback are managed natively by Rust AudioCore.
+      // Never trigger web recovery/restart while Tauri native audio is active!
+      if (window.electronAPI && window.electronAPI.isTauri) return;
+
       const token = state.loadToken;
       playbackStallTimer = setTimeout(() => {
         playbackStallTimer = null;

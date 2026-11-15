@@ -122,7 +122,15 @@
     clearCache: async () => {},
 
     // Rust Audio Core APIs
-    rustAudioLoad: (url, startPos, duration, autoplay) => invoke('rust_audio_load', { url, startPos, duration, autoplay }),
+    rustAudioLoad: (url, startPos, duration, autoplay, trackId) => invoke('rust_audio_load', {
+      url,
+      startPos,
+      start_pos: startPos,
+      duration,
+      autoplay,
+      trackId: trackId || null,
+      track_id: trackId || null
+    }),
     rustAudioPlay: () => invoke('rust_audio_play'),
     rustAudioPause: () => invoke('rust_audio_pause'),
     rustAudioToggle: () => invoke('rust_audio_toggle'),
@@ -219,15 +227,24 @@
             if (Number.isFinite(state.currentTrack.duration) && state.currentTrack.duration > 0) {
               durHint = state.currentTrack.duration;
             }
-            trackId = (typeof getTrackCanonicalId === 'function' ? getTrackCanonicalId(state.currentTrack) : '') || state.currentTrack.id || null;
+            trackId = (typeof getTrackCanonicalId === 'function' ? getTrackCanonicalId(state.currentTrack) : '') || state.currentTrack.id || state.currentTrack.resolvedId || null;
           }
         } catch (_) {}
+
+        if (!trackId && typeof streamUrl === 'string' && streamUrl.includes('?')) {
+          try {
+            const parsed = new URL(streamUrl, 'http://localhost');
+            trackId = parsed.searchParams.get('id') || parsed.searchParams.get('trackId') || parsed.searchParams.get('v') || null;
+          } catch (_) {}
+        }
 
         invoke('rust_audio_load', {
           url: streamUrl,
           startPos: 0,
+          start_pos: 0,
           duration: durHint,
           autoplay: _isPlaying,
+          trackId: trackId,
           track_id: trackId
         }).then((st) => {
           if (loadToken !== currentLoadToken) return;

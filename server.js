@@ -559,7 +559,7 @@ async function resolveAudioStreamDetails(target, platform = '', queryFallback = 
     const cached = streamCache.get(cacheKey);
     if (cached && cached.expireAt > Date.now()) {
       if (!isSubsequentRange || cached.fullUrl) {
-        const chosenUrl = (isSubsequentRange || !cached.fastUrl) ? (cached.fullUrl || cached.url) : (cached.fastUrl || cached.url);
+        const chosenUrl = cached.fullUrl || ((isSubsequentRange || !cached.fastUrl) ? (cached.fullUrl || cached.url) : (cached.fastUrl || cached.url));
         return {
           url: chosenUrl,
           itag: cached.itag || 140,
