@@ -2176,6 +2176,86 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Lightweight playlist/queue Innertube ID + fastUrl prewarm (NO yt-dlp spawned)
+  if (pathname === '/api/prewarm-ids' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => {
+      body += chunk;
+      if (body.length > 262144) req.destroy();
+    });
+    req.on('end', async () => {
+      try {
+        const parsed = JSON.parse(body || '{}');
+        const list = Array.isArray(parsed.tracks) ? parsed.tracks.slice(0, 20) : [];
+        const resolved = {};
+        let idx = 0;
+
+        const worker = async () => {
+          while (idx < list.length) {
+            const curIdx = idx++;
+            const item = list[curIdx];
+            if (!item || typeof item !== 'object') continue;
+            const rawId = String(item.id || '').trim();
+            const rawUrl = String(item.url || '').trim();
+            const title = String(item.title || '').trim();
+            const artist = String(item.artist || '').trim();
+
+            let ytId = extractYouTubeId(rawId) || extractYouTubeId(rawUrl);
+            if (!ytId && (title || artist)) {
+              const q = (artist && title) ? `${artist} - ${title}` : (title || artist);
+              const norm = normalizeTrackKey(q);
+              if (norm && idMapCache.has(norm)) {
+                ytId = idMapCache.get(norm);
+              } else if (rawId && idMapCache.has(rawId)) {
+                ytId = idMapCache.get(rawId);
+              } else {
+                try {
+                  const sRes = await searchYouTubeMusic(q);
+                  if (Array.isArray(sRes) && sRes[0]?.id) {
+                    ytId = sRes[0].id;
+                    if (norm) idMapCache.set(norm, ytId);
+                    if (rawId) idMapCache.set(rawId, ytId);
+                    saveIdCacheToDisk();
+                  }
+                } catch (_) {}
+              }
+            }
+
+            if (ytId) {
+              resolved[String(curIdx)] = ytId;
+              const cached = streamCache.get(ytId);
+              if (!cached || cached.expireAt <= Date.now()) {
+                try {
+                  const fast = await fetchYouTubeInnertubeStream(ytId);
+                  if (fast && fast.url) {
+                    streamCache.set(ytId, {
+                      url: fast.url,
+                      fastUrl: fast.url,
+                      itag: fast.itag || 140,
+                      mimeType: fast.mimeType || 'audio/mp4',
+                      contentLength: fast.contentLength,
+                      resolvedId: ytId,
+                      expireAt: Date.now() + 18000000
+                    });
+                    saveStreamCacheToDisk();
+                  }
+                } catch (_) {}
+              }
+            }
+          }
+        };
+
+        await Promise.all([worker(), worker(), worker()]);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, resolved }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
   // Trending tracks endpoint: /api/trending
   if (pathname === '/api/trending' || pathname === '/api/hot') {
     try {

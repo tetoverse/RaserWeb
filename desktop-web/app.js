@@ -14047,9 +14047,37 @@ function renderClickableArtists(container, rawArtist, hintTrack = null) {
     return newPl;
   }
 
+  function prewarmPlaylistTrackIds(tracks) {
+    if (!Array.isArray(tracks) || tracks.length === 0) return;
+    const candidates = tracks.filter(t => t && !t._idPrewarmed && t.platform !== 'local' && t.platform !== 'soundcloud').slice(0, 20);
+    if (candidates.length === 0) return;
+    candidates.forEach(t => { t._idPrewarmed = true; });
+    const payload = candidates.map(t => ({
+      id: t.resolvedId || t.id || '',
+      title: t.title || '',
+      artist: t.artist || '',
+      url: t.url || ''
+    }));
+    fetch(`${getApiBaseUrl()}/api/prewarm-ids`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tracks: payload })
+    }).then(r => r.json()).then(d => {
+      if (d && d.success && d.resolved) {
+        for (const [idxStr, ytId] of Object.entries(d.resolved)) {
+          const idx = parseInt(idxStr, 10);
+          if (candidates[idx] && ytId) {
+            candidates[idx].resolvedId = ytId;
+          }
+        }
+      }
+    }).catch(() => {});
+  }
+
   function openPlaylistDetail(playlistId, keepQuery = false) {
     const pl = state.playlists.find(p => p.id === playlistId);
     if (!pl) return;
+    prewarmPlaylistTrackIds(pl.tracks);
     if (state.currentPlaylistId !== playlistId && !keepQuery) {
       if (el.playlistSearchInput) el.playlistSearchInput.value = '';
     }
