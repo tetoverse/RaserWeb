@@ -3866,6 +3866,12 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
         }
       }
+      if (typeof m3cStep === 'function' && m3c && !m3c.raf) {
+        m3cStep(timestamp, true);
+      }
+      if (state.isPlaying && isGradientMode() && isLyricsViewVisible()) {
+        updateActiveGradient();
+      }
     }
     renderLoop(0);
   }
@@ -6482,9 +6488,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   function startGradientLoop() {
     if (gradientRaf || !isLyricsViewVisible()) return;
+    // When renderLoop is active during playback, it drives updateActiveGradient() directly without a separate rAF
+    if (state.isPlaying && animationFrameId) return;
     const tick = (now) => {
       gradientRaf = 0;
       if (!state.isPlaying || !state.isWindowVisible || document.hidden || !isGradientMode() || !isLyricsViewVisible()) return;
+      if (animationFrameId) return;
       if (now - lastGradientTick >= 28) {
         lastGradientTick = now;
         updateActiveGradient();
@@ -17969,9 +17978,8 @@ function bindCoverHoldZoom(wrapEl) {
       ctx.stroke();
     }
   }
-  function m3cLoop(now) {
-    m3c.raf = 0;
-    if (!m3cEnabled() || document.hidden || !state.isWindowVisible) return;
+  function m3cStep(now, fromUnifiedLoop) {
+    if (!m3cEnabled() || document.hidden || !state.isWindowVisible) return false;
 
     const targetHover = m3c.isHovered ? 1 : 0;
     const diff = targetHover - m3c.hoverProgress;
@@ -17981,12 +17989,8 @@ function bindCoverHoldZoom(wrapEl) {
     const rateDiff = m3c.targetRate - m3c.rotRate;
     const isRateAnimating = Math.abs(rateDiff) > 0.01;
 
-    // Throttle to ~30 FPS when not actively hover-transitioning to halve CPU/GPU load
-    if (!isHoverAnimating && m3c.lastDraw && now - m3c.lastDraw < 32) {
-      if (state.isPlaying || isRateAnimating) {
-        m3c.raf = requestAnimationFrame(m3cLoop);
-      }
-      return;
+    if (!fromUnifiedLoop && !isHoverAnimating && m3c.lastDraw && now - m3c.lastDraw < 32) {
+      return state.isPlaying || isRateAnimating;
     }
     m3c.lastDraw = now;
 
@@ -18012,13 +18016,26 @@ function bindCoverHoldZoom(wrapEl) {
     if (state.isPlaying) m3c.phase += 0.0075 * delta;
 
     m3cDraw(now);
-    if (state.isPlaying || isHoverAnimating || isRateAnimating || m3c.rotRate > 0.005) {
+    const keepAlive = state.isPlaying || isHoverAnimating || isRateAnimating || m3c.rotRate > 0.005;
+    if (!keepAlive) m3c.last = 0;
+    return keepAlive;
+  }
+  function m3cLoop(now) {
+    m3c.raf = 0;
+    // Defer to unified renderLoop while playing unless hover-transitioning
+    if (state.isPlaying && animationFrameId && Math.abs((m3c.isHovered ? 1 : 0) - m3c.hoverProgress) <= 0.002) {
+      return;
+    }
+    if (m3cStep(now, false)) {
       m3c.raf = requestAnimationFrame(m3cLoop);
-    } else {
-      m3c.last = 0;
     }
   }
-  function m3cStart() { if (m3c && !m3c.raf) { m3c.last = performance.now(); m3c.raf = requestAnimationFrame(m3cLoop); } }
+  function m3cStart() {
+    if (!m3c || m3c.raf) return;
+    if (state.isPlaying && animationFrameId && Math.abs((m3c.isHovered ? 1 : 0) - m3c.hoverProgress) <= 0.002) return;
+    m3c.last = performance.now();
+    m3c.raf = requestAnimationFrame(m3cLoop);
+  }
   function applyM3Cover() {
     const on = m3cEnabled();
     document.body.classList.toggle('m3-cover-on', on);
