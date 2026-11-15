@@ -30,6 +30,44 @@ const inflightResolutions = new Map();
 const inflightFullResolutions = new Map();
 const idMapCache = new Map(); // query/id -> youtubeVideoId
 
+function pickBestSearchResult(results, queryTitle = '', targetDuration = 0) {
+  if (!Array.isArray(results) || results.length === 0) return null;
+  const qLower = String(queryTitle || '').toLowerCase();
+  const dur = Number(targetDuration) || 0;
+  const variantWords = ['remix', 'cover', 'slowed', 'reverb', 'sped up', 'nightcore', 'live', 'karaoke', 'instrumental', 'acoustic', '8d'];
+  const wantedVariants = variantWords.filter(w => qLower.includes(w));
+
+  let best = results[0];
+  let bestScore = -Infinity;
+
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    if (!r || !r.id) continue;
+    let score = 100 - i * 3; // slight preference for higher search rank
+    const rTitle = String(r.title || '').toLowerCase();
+
+    for (const w of variantWords) {
+      if (rTitle.includes(w) && !wantedVariants.includes(w)) {
+        score -= 60;
+      }
+    }
+
+    if (dur > 10 && r.duration > 10) {
+      const diff = Math.abs(r.duration - dur);
+      if (diff <= 5) score += 80;
+      else if (diff <= 15) score += 50;
+      else if (diff <= 30) score += 10;
+      else score -= Math.min(120, diff);
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = r;
+    }
+  }
+  return best;
+}
+
 function normalizeTrackKey(str) {
   if (!str || typeof str !== 'string') return '';
   return str.toLowerCase().replace(/[\(\[\{].*?[\)\]\}]/g, '').replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
@@ -2287,6 +2325,7 @@ const server = http.createServer(async (req, res) => {
             const rawUrl = String(item.url || '').trim();
             const title = String(item.title || '').trim();
             const artist = String(item.artist || '').trim();
+            const targetDur = Number(item.duration) || 0;
 
             let ytId = extractYouTubeId(rawId) || extractYouTubeId(rawUrl);
             if (!ytId && (title || artist)) {
@@ -2299,8 +2338,9 @@ const server = http.createServer(async (req, res) => {
               } else {
                 try {
                   const sRes = await searchYouTubeMusic(q);
-                  if (Array.isArray(sRes) && sRes[0]?.id) {
-                    ytId = sRes[0].id;
+                  const picked = pickBestSearchResult(sRes, title || q, targetDur);
+                  if (picked && picked.id) {
+                    ytId = picked.id;
                     if (norm) idMapCache.set(norm, ytId);
                     if (rawId) idMapCache.set(rawId, ytId);
                     saveIdCacheToDisk();
