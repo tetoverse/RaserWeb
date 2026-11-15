@@ -386,18 +386,23 @@ function resolveFullStreamViaYtDlp(targetId, cleanTarget = '', isUrl = false) {
     }
 
     const fallbackTarget = resolvedVideoId ? `https://www.youtube.com/watch?v=${resolvedVideoId}` : (isUrl ? cleanTarget : `ytsearch1:${cleanTarget}`);
-    const ytdlpArgs = ['--no-warnings', '--no-playlist', '--js-runtimes', 'node', '-g', '-f', '140/ba/b', fallbackTarget];
+    const ytdlpArgs = ['--no-warnings', '--no-playlist', '--extractor-args', 'youtube:player_client=tvhtml5', '--js-runtimes', 'node', '-g', '-f', '140/ba/b', fallbackTarget];
 
     let streamUrl = null;
 
-    // 1. Attempt local yt-dlp in a single pass (avoids double-spawn 5.5s penalty)
+    // 1. Attempt local yt-dlp first (tvhtml5 + node js-runtime)
     try {
       streamUrl = await new Promise((resolveYt, rejectYt) => {
-        execFile('yt-dlp', ytdlpArgs, { timeout: 25000 }, (err, stdout) => {
+        execFile('yt-dlp', ytdlpArgs, { timeout: 20000 }, (err, stdout) => {
           if (!err && stdout && stdout.trim().startsWith('https://')) {
             return resolveYt(stdout.trim().split('\n')[0]);
           }
-          rejectYt(err || new Error('yt-dlp extraction failed'));
+          execFile('yt-dlp', ['--no-warnings', '--no-playlist', '--js-runtimes', 'node', '-g', '-f', '140/ba/b', fallbackTarget], { timeout: 25000 }, (fErr, fOut) => {
+            if (!fErr && fOut && fOut.trim().startsWith('https://')) {
+              return resolveYt(fOut.trim().split('\n')[0]);
+            }
+            rejectYt(fErr || err || new Error('yt-dlp extraction failed'));
+          });
         });
       });
     } catch (localYtErr) {
