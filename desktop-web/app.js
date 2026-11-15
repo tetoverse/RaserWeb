@@ -6411,20 +6411,30 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (fillParen && parenStr.length > 0) {
       const pStart = parseFloat(fillParen.dataset.startRatio || '0.7');
       const pEnd = Math.max(pStart + 0.1, parseFloat(fillParen.dataset.endRatio || '1.0'));
-      const kMain = Math.min(1, Math.max(0, k));
-      const kParen = Math.min(1, Math.max(0, (k - pStart) / (pEnd - pStart)));
-      fillMain.style.setProperty('--k', kMain.toFixed(4));
-      fillParen.style.setProperty('--k', kParen.toFixed(4));
+      const kMain = Math.min(1, Math.max(0, k)).toFixed(3);
+      const kParen = Math.min(1, Math.max(0, (k - pStart) / (pEnd - pStart))).toFixed(3);
+      if (fillMain._lastK !== kMain) { fillMain._lastK = kMain; fillMain.style.setProperty('--k', kMain); }
+      if (fillParen._lastK !== kParen) { fillParen._lastK = kParen; fillParen.style.setProperty('--k', kParen); }
     } else {
-      fillMain.style.setProperty('--k', k.toFixed(4));
+      const kVal = k.toFixed(3);
+      if (fillMain._lastK !== kVal) { fillMain._lastK = kVal; fillMain.style.setProperty('--k', kVal); }
     }
   }
+  let lastGradientTick = 0;
+  function isLyricsViewVisible() {
+    if (state.isTvKaraokeOpen) return true;
+    if (el.viewLyrics && el.viewLyrics.classList.contains('active')) return true;
+    return false;
+  }
   function startGradientLoop() {
-    if (gradientRaf) return;
-    const tick = () => {
+    if (gradientRaf || !isLyricsViewVisible()) return;
+    const tick = (now) => {
       gradientRaf = 0;
-      if (!state.isPlaying || !state.isWindowVisible || !isGradientMode()) return;
-      updateActiveGradient();
+      if (!state.isPlaying || !state.isWindowVisible || document.hidden || !isGradientMode() || !isLyricsViewVisible()) return;
+      if (now - lastGradientTick >= 28) {
+        lastGradientTick = now;
+        updateActiveGradient();
+      }
       gradientRaf = requestAnimationFrame(tick);
     };
     gradientRaf = requestAnimationFrame(tick);
@@ -6531,9 +6541,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       const line = state.syncedLyrics[idx];
       if (line && line.isGap) {
         if (idx < activeIndex) {
-          lineEl.classList.add('past-gap');
+          if (!lineEl.classList.contains('past-gap')) lineEl.classList.add('past-gap');
         } else {
-          lineEl.classList.remove('past-gap');
+          if (lineEl.classList.contains('past-gap')) lineEl.classList.remove('past-gap');
         }
       }
       if (lineChanged) lineEl.style.setProperty('--dist', activeIndex >= 0 ? Math.abs(idx - activeIndex) : 0);
@@ -6541,8 +6551,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!lineEl.classList.contains('active')) lineEl.classList.add('active');
 
         if (isGradientMode()) {
-          updateActiveGradient();
-          startGradientLoop();
+          if (isLyricsViewVisible()) {
+            updateActiveGradient();
+            startGradientLoop();
+          }
         } else if (getAdv('karaoke_words', false) && state.lyricsMode === 'word') {
           const line = state.syncedLyrics[idx];
           if (line && line.words && Array.isArray(line.words) && line.words.length > 0) {
@@ -6583,15 +6595,21 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
         }
       } else {
-        lineEl.classList.remove('active');
-        if (lineEl.classList.contains('gradient-line')) {
-          lineEl.querySelectorAll('.lyric-fill').forEach(f => f.style.setProperty('--k', '0'));
-        }
-        if (!isGradientMode() && getAdv('karaoke_words', false) && state.lyricsMode === 'word') {
-          lineEl.querySelectorAll('.lyric-word').forEach(wSpan => {
-            const isP = wSpan.classList.contains('lyric-paren') ? ' lyric-paren' : '';
-            wSpan.className = (idx < activeIndex ? 'lyric-word past-word' : 'lyric-word') + isP;
-          });
+        const wasActive = lineEl.classList.contains('active');
+        if (wasActive || lineChanged) {
+          if (wasActive) lineEl.classList.remove('active');
+          if (lineEl.classList.contains('gradient-line')) {
+            lineEl.querySelectorAll('.lyric-fill').forEach(f => {
+              if (f._lastK !== '0') { f._lastK = '0'; f.style.setProperty('--k', '0'); }
+            });
+          }
+          if (!isGradientMode() && getAdv('karaoke_words', false) && state.lyricsMode === 'word') {
+            lineEl.querySelectorAll('.lyric-word').forEach(wSpan => {
+              const isP = wSpan.classList.contains('lyric-paren') ? ' lyric-paren' : '';
+              const nextCls = (idx < activeIndex ? 'lyric-word past-word' : 'lyric-word') + isP;
+              if (wSpan.className !== nextCls) wSpan.className = nextCls;
+            });
+          }
         }
       }
     });
