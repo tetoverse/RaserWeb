@@ -1603,7 +1603,25 @@
             <span class="settings-section-title">Storage</span>
 
             <div class="m3-group">
-            <div class="setting-item clickable clear-cache-row" id="btn-open-clear-cache">
+                        <div class="setting-item" id="offline-cache-row">
+              <div class="setting-item-top" style="align-items: center; justify-content: space-between;">
+                <div style="display: flex; align-items: center; gap: 12px;">
+                  <div style="width: 32px; height: 32px; border-radius: 50%; background: var(--md-sys-color-surface-container-high); display: flex; align-items: center; justify-content: center; color: var(--md-sys-color-primary);">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  </div>
+                  <div style="display: flex; flex-direction: column;">
+                    <span class="setting-name" data-i18n>Smart Offline Cache</span>
+                    <span id="cache-stats-text" style="font-size: calc(12px * var(--font-scale, 1)); color: var(--md-sys-color-outline);" data-i18n>Automatically save played tracks and lyrics locally</span>
+                  </div>
+                </div>
+                <div style="display: flex; gap: 8px;">
+                  <button class="btn-outline-pill" id="btn-open-cache-folder" style="padding: 6px 14px; font-size: calc(12px * var(--font-scale, 1));" data-i18n>Open Folder</button>
+                  <button class="btn-outline-pill" id="btn-clear-disk-cache" style="padding: 6px 14px; font-size: calc(12px * var(--font-scale, 1)); color: #ef4444;" data-i18n>Clear</button>
+                </div>
+              </div>
+            </div>
+
+<div class="setting-item clickable clear-cache-row" id="btn-open-clear-cache">
               <div class="setting-item-top" style="cursor: pointer; align-items: center;">
                 <div style="display: flex; align-items: center; gap: 12px;">
                   <div style="width: 32px; height: 32px; border-radius: 50%; background: var(--md-sys-color-surface-container-high); display: flex; align-items: center; justify-content: center; color: var(--md-sys-color-primary);">

@@ -130,7 +130,12 @@
     rustAudioSetVolume: (volume) => invoke('rust_audio_set_volume', { volume }),
     rustAudioSetSpeed: (speed) => invoke('rust_audio_set_speed', { speed }),
     rustAudioGetState: () => invoke('rust_audio_get_state'),
-    rustAudioGetFrequencyData: () => cachedRustFreqData
+    rustAudioGetFrequencyData: () => cachedRustFreqData,
+    getCacheLyrics: (trackId) => invoke('get_cache_lyrics', { trackId }),
+    saveCacheLyrics: (trackId, lyricsJson) => invoke('save_cache_lyrics', { trackId, lyricsJson }),
+    getCacheStats: () => invoke('get_cache_stats'),
+    clearDiskCache: () => invoke('clear_disk_cache'),
+    openCacheFolder: () => invoke('open_cache_folder')
   });
 
   // --- Rust Audio Core Hook for HTML5 native-audio ---
@@ -208,9 +213,13 @@
         }
 
         let durHint = null;
+        let trackId = null;
         try {
-          if (typeof state !== 'undefined' && state.currentTrack && Number.isFinite(state.currentTrack.duration) && state.currentTrack.duration > 0) {
-            durHint = state.currentTrack.duration;
+          if (typeof state !== 'undefined' && state.currentTrack) {
+            if (Number.isFinite(state.currentTrack.duration) && state.currentTrack.duration > 0) {
+              durHint = state.currentTrack.duration;
+            }
+            trackId = (typeof getTrackCanonicalId === 'function' ? getTrackCanonicalId(state.currentTrack) : '') || state.currentTrack.id || null;
           }
         } catch (_) {}
 
@@ -218,7 +227,8 @@
           url: streamUrl,
           startPos: 0,
           duration: durHint,
-          autoplay: _isPlaying
+          autoplay: _isPlaying,
+          track_id: trackId
         }).then((st) => {
           if (loadToken !== currentLoadToken) return;
           _isLoading = false;

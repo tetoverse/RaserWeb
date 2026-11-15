@@ -5438,6 +5438,18 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       let data = lyricsSessionCache.get(lyricsCacheKey);
+      if (!data && window.tauriAPI && typeof window.tauriAPI.getCacheLyrics === 'function' && trackId) {
+        try {
+          const localCached = await window.tauriAPI.getCacheLyrics(trackId);
+          if (localCached) {
+            const parsedLocal = JSON.parse(localCached);
+            if (parsedLocal && parsedLocal.success && parsedLocal.lyrics) {
+              data = parsedLocal;
+              lyricsSessionCache.set(lyricsCacheKey, data);
+            }
+          }
+        } catch (_) {}
+      }
       if (!data) {
         const onlineParam = getAdv('online_lyrics', true) ? '1' : '0';
         const durationParam = (state.currentTrack && state.currentTrack.duration) ? `&duration=${encodeURIComponent(state.currentTrack.duration)}` : '';
@@ -5448,6 +5460,11 @@ document.addEventListener('DOMContentLoaded', async () => {
           data = await res.json();
           if (data && data.success && data.lyrics) {
             lyricsSessionCache.set(lyricsCacheKey, data);
+            if (window.tauriAPI && typeof window.tauriAPI.saveCacheLyrics === 'function' && trackId) {
+              try {
+                window.tauriAPI.saveCacheLyrics(trackId, JSON.stringify(data));
+              } catch (_) {}
+            }
           }
         } catch (fetchErr) {
           data = null;
@@ -26369,6 +26386,54 @@ function bindCoverHoldZoom(wrapEl) {
       if (btnCancelCache) btnCancelCache.disabled = false;
     }, 200);
   }
+
+  // --- Smart Offline Cache Controls ---
+  async function updateCacheStatsUI() {
+    const statsEl = document.getElementById('cache-stats-text');
+    if (!statsEl) return;
+    if (window.tauriAPI && typeof window.tauriAPI.getCacheStats === 'function') {
+      try {
+        const stats = await window.tauriAPI.getCacheStats();
+        if (stats && typeof stats.bytes === 'number') {
+          const mb = (stats.bytes / (1024 * 1024)).toFixed(1);
+          const lang = localStorage.getItem('riff_ui_lang') || 'en';
+          if (lang === 'tr') {
+            statsEl.textContent = `${stats.count} parça ve söz kaydedildi (${mb} MB)`;
+          } else {
+            statsEl.textContent = `${stats.count} tracks & lyrics saved (${mb} MB)`;
+          }
+          return;
+        }
+      } catch (_) {}
+    }
+  }
+
+  const btnOpenCacheFolder = document.getElementById('btn-open-cache-folder');
+  if (btnOpenCacheFolder) {
+    btnOpenCacheFolder.addEventListener('click', () => {
+      if (window.tauriAPI && typeof window.tauriAPI.openCacheFolder === 'function') {
+        window.tauriAPI.openCacheFolder();
+      } else {
+        showToast(localStorage.getItem('riff_ui_lang') === 'tr' ? 'Önbellek klasörü açılamadı' : 'Cannot open cache folder', 'error');
+      }
+    });
+  }
+
+  const btnClearDiskCache = document.getElementById('btn-clear-disk-cache');
+  if (btnClearDiskCache) {
+    btnClearDiskCache.addEventListener('click', async () => {
+      if (window.tauriAPI && typeof window.tauriAPI.clearDiskCache === 'function') {
+        try {
+          await window.tauriAPI.clearDiskCache();
+          showToast(localStorage.getItem('riff_ui_lang') === 'tr' ? 'Çevrimdışı önbellek temizlendi' : 'Offline cache cleared');
+          updateCacheStatsUI();
+        } catch (_) {
+          showToast(localStorage.getItem('riff_ui_lang') === 'tr' ? 'Önbellek temizlenirken hata oluştu' : 'Failed to clear cache', 'error');
+        }
+      }
+    });
+  }
+  updateCacheStatsUI();
 
   document.addEventListener('click', async (e) => {
     const btn = e.target.closest('#btn-open-clear-cache');
