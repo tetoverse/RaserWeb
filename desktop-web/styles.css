@@ -354,22 +354,7 @@ body.perf .titlebar { transition: none !important; }
 }
 
 .platform-switch-container {
-  margin-left: auto;
-  position: relative;
-  z-index: 3;
-  display: flex;
-  align-items: center;
-  max-width: 460px;
-  opacity: 1;
-  transform: scale(1);
-  overflow: hidden;
-  white-space: nowrap;
-  pointer-events: auto;
-  transition: max-width 0.35s cubic-bezier(0.2, 0, 0, 1),
-              opacity 0.25s cubic-bezier(0.2, 0, 0, 1),
-              transform 0.35s cubic-bezier(0.2, 0, 0, 1),
-              padding 0.35s cubic-bezier(0.2, 0, 0, 1),
-              margin 0.35s cubic-bezier(0.2, 0, 0, 1);
+  display: none !important;
 }
 
 .search-box {
@@ -866,7 +851,7 @@ body.perf .app-icon-option-box {
 .rail-playlist-item:hover {
   transform: scale(1.08);
   border-color: var(--md-sys-color-primary);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.6) !important;
+  box-shadow: none !important;
   z-index: 999999 !important;
 }
 .rail-playlist-item.active {
@@ -5587,6 +5572,7 @@ button:not(.nav-item):not(.settings-nav-btn):active svg, button:not(.nav-item):n
 
 .playlist-item:hover {
   background: var(--md-sys-color-surface-container-high);
+  box-shadow: none !important;
   transition: background-color var(--transition-hover), color var(--transition-hover);
 }
 
@@ -7579,7 +7565,7 @@ body.mini.mini-lyrics-on #btn-mini-lyrics {
 #view-favorites,
 .favorites-view {
   box-sizing: border-box !important;
-  overflow-x: hidden;
+  overflow: visible !important;
 }
 
 .keycap { position: relative; isolation: isolate; display: inline-flex; align-items: center; justify-content: center; min-width: 40px; height: 40px; padding: 0 12px 4px; box-sizing: border-box; border-radius: 9px; background: color-mix(in srgb, var(--md-sys-color-on-surface) 6%, var(--md-sys-color-surface-container-lowest)); color: var(--md-sys-color-on-surface); font: 600 13px/1 var(--font-family, inherit); letter-spacing: .02em; user-select: none; }
@@ -9803,7 +9789,7 @@ body[data-theme="light"] .tv-karaoke {
 }
 .scrubber-track-container {
   height: 26px !important;
-  overflow-x: clip !important;
+  overflow: visible !important;
 }
 .presets-chips-container { align-content: flex-start !important; align-items: flex-start !important; justify-content: flex-start; gap: 8px; }
 .settings-nav { flex: 0 0 clamp(195px, 22vw, 235px); }
@@ -11288,7 +11274,7 @@ body.perf .np-queue-panel { transition: none; }
 .user-account-container {
   display: flex;
   align-items: center;
-  margin-left: 8px;
+  margin-left: auto;
 }
 
 .btn-account-pill {
@@ -11349,6 +11335,7 @@ body.perf .np-queue-panel { transition: none; }
 }
 
 .cloud-sync-dot {
+  display: none !important;
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -11483,5 +11470,19 @@ body.perf .np-queue-panel { transition: none; }
 .spotify-promo {
   display: none !important;
 }
+
+body.hide-trending #sp-trend-sec {
+  display: none !important;
+}
+
+#btn-rail-new-playlist .rail-playlist-tooltip,
+#btn-rail-new-playlist::before,
+#btn-rail-new-playlist::after {
+  display: none !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
 
 

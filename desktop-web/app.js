@@ -1,5 +1,8 @@
 // Unified API base URL helper for desktop (Electron loopback), Tauri native & web (remote host)
 function getApiBaseUrl(port) {
+  if (typeof window !== 'undefined' && window.location && (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost')) {
+    return window.location.origin;
+  }
   if (typeof window !== 'undefined' && window.electronAPI && window.electronAPI.isTauri) {
     return 'https://app.raserapp.online';
   }
@@ -55,7 +58,6 @@ migrated = true;
 } catch (_) {}
 }
 
-try { origClear.call(window.localStorage); } catch (_) {}
 window.__RASER_STORAGE_MAP__ = window.__RIFF_STORAGE_MAP__ = diskMap;
 
 if (migrated) {
@@ -94,6 +96,7 @@ if (k.startsWith('raser_')) {
   diskMap['raser_' + k.slice(5)] = v;
 }
 flushAsync();
+try { origSet.call(this, k, v); } catch (_) {}
 if (k === 'devsize_playlists' || k === 'devsize_history') {
   try { window.dispatchEvent(new CustomEvent('raser:playlist-changed')); } catch (_) {}
 }
@@ -116,6 +119,7 @@ if (altK && Object.prototype.hasOwnProperty.call(diskMap, altK)) {
   changed = true;
 }
 if (changed) flushAsync();
+try { origSet.call(this, k, v); } catch (_) {}
 if (k === 'devsize_playlists' || k === 'devsize_history') {
   try { window.dispatchEvent(new CustomEvent('raser:playlist-changed')); } catch (_) {}
 }
@@ -129,6 +133,7 @@ if (this === window.localStorage) {
 diskMap = {};
 window.__RASER_STORAGE_MAP__ = window.__RIFF_STORAGE_MAP__ = diskMap;
 flushAsync();
+try { origSet.call(this, k, v); } catch (_) {}
 if (k === 'devsize_playlists' || k === 'devsize_history') {
   try { window.dispatchEvent(new CustomEvent('raser:playlist-changed')); } catch (_) {}
 }
@@ -1172,6 +1177,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     else if (cmd === 'next') playNext();
     else if (cmd === 'prev') playPrev();
     else if (cmd === 'stop') { if (state.isPlaying) pauseSmooth(); }
+  }
+
+  window.__raserMediaCommand = (cmd) => handleMediaCommand(cmd, 'taskbar');
+  window.addEventListener('media-command', (e) => {
+    const cmd = e.detail || e.payload || e.data;
+    if (cmd) handleMediaCommand(cmd, 'event');
+  });
+  if (window.__TAURI__ && window.__TAURI__.event && typeof window.__TAURI__.event.listen === 'function') {
+    try {
+      window.__TAURI__.event.listen('media-command', (e) => {
+        handleMediaCommand(e.payload, 'tauri-event');
+      });
+    } catch (_) {}
   }
 
   if ('mediaSession' in navigator) {
@@ -2524,6 +2542,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   applyReducedMotionSetting();
   document.body.classList.toggle('hide-titlebar', !!getAdv('hide_titlebar', false));
   document.body.classList.toggle('keep-bar-timestamps', !getAdv('autohide_timestamps', true));
+  document.body.classList.toggle('hide-trending', !!getAdv('hide_trending', false));
   document.body.classList.toggle('classic-sidebar', !!getAdv('classic_sidebar', false));
 
   let titlebarRevealHideTimer = null;
@@ -3192,6 +3211,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     let bufferLength = analyserNode ? analyserNode.frequencyBinCount : 0;
     let freqData = bufferLength > 0 ? new Uint8Array(bufferLength) : null;
+    let lastRenderTime = 0;
 
     function renderLoop(timestamp) {
       if (document.hidden || !state.isWindowVisible) {
@@ -3212,6 +3232,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       animationFrameId = requestAnimationFrame(renderLoop);
+
+      // Smooth 30-35 FPS lock to halve GPU compositor & backing store load without visual difference
+      if (timestamp - lastRenderTime < 28) return;
+      lastRenderTime = timestamp;
 
       try {
         const activeTrim = state.currentTrack ? getTrackTrim(state.currentTrack) : null;
@@ -3817,6 +3841,15 @@ document.addEventListener('DOMContentLoaded', async () => {
       document.body.classList.add('hidden-window');
       if (typeof updateCoverAnimVisibility === 'function') updateCoverAnimVisibility();
       window.electronAPI?.clearWebFrameCache?.();
+      try {
+        if (typeof coverAnalysisCache !== 'undefined' && coverAnalysisCache.size > 15) coverAnalysisCache.clear();
+        if (typeof dominantColorsCache !== 'undefined' && dominantColorsCache.size > 15) dominantColorsCache.clear();
+        if (typeof waveformPeakCache !== 'undefined' && waveformPeakCache.size > 10) waveformPeakCache.clear();
+        if (typeof tvkBakedCoverCache !== 'undefined' && tvkBakedCoverCache.size > 10) tvkBakedCoverCache.clear();
+      } catch (e) {}
+      if (typeof window.gc === 'function') {
+        try { window.gc(); } catch (e) {}
+      }
       if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
         window.__TAURI__.core.invoke('trim_working_set').catch(() => {});
       }
@@ -3824,12 +3857,22 @@ document.addEventListener('DOMContentLoaded', async () => {
       document.body.classList.remove('app-paused');
       document.body.classList.remove('hidden-window');
       if (typeof updateCoverAnimVisibility === 'function') updateCoverAnimVisibility();
+      if (typeof applyVisualEffects === 'function') applyVisualEffects();
       resizeCanvases();
       hasDrawnPausedFrame = false;
       if (state.isPlaying || isDraggingScrubber) startVisualizers();
       if (typeof cacheModal !== 'undefined' && cacheModal && cacheModal.classList.contains('visible') && typeof cacheRafId !== 'undefined' && !cacheRafId) {
         cacheRafId = requestAnimationFrame(cacheFrame);
       }
+      // Ensure cover animations immediately resume after window restore animation
+      requestAnimationFrame(() => {
+        if (typeof updateCoverAnimVisibility === 'function') updateCoverAnimVisibility();
+        if (typeof m3cStart === 'function') m3cStart();
+      });
+      setTimeout(() => {
+        if (typeof updateCoverAnimVisibility === 'function') updateCoverAnimVisibility();
+        if (typeof m3cStart === 'function') m3cStart();
+      }, 120);
       if (typeof updateLyricsPadding === 'function') {
         const syncOnRestore = () => {
           updateLyricsPadding();
@@ -4513,10 +4556,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // --- HYBRID FAST IN-MEMORY AUDIO BLOB CACHE ---
-  const trackBlobMemoryCache = new Map(); // canonicalId -> { blob, blobUrl, size, lastAccessed }
-  const MAX_BLOB_CACHE_ENTRIES = 12;
-  const inflightBlobDownloads = new Map(); // canonicalId -> Promise<entry>
+  // --- STREAMING AUDIO ARCHITECTURE (Zero Blob RAM Bloat) ---
+  const trackBlobMemoryCache = new Map(); // Kept for API compatibility, strictly disabled
+  const MAX_BLOB_CACHE_ENTRIES = 0;
+  const inflightBlobDownloads = new Map();
 
   function freeBlobCacheEntry(key) {
     const entry = trackBlobMemoryCache.get(key);
@@ -4529,64 +4572,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   function evictOldestBlobIfNeeded() {
-    if (trackBlobMemoryCache.size < MAX_BLOB_CACHE_ENTRIES) return;
-    const currentId = state.currentTrack ? getTrackCanonicalId(state.currentTrack) : null;
-    let oldestKey = null;
-    let oldestTime = Infinity;
-    for (const [key, item] of trackBlobMemoryCache.entries()) {
-      if (key !== currentId && item.lastAccessed < oldestTime) {
-        oldestTime = item.lastAccessed;
-        oldestKey = key;
-      }
+    for (const [key] of trackBlobMemoryCache.entries()) {
+      freeBlobCacheEntry(key);
     }
-    if (oldestKey) freeBlobCacheEntry(oldestKey);
   }
 
   async function bufferTrackToBlob(track, streamUrl, signal = null) {
-    if (!track || !streamUrl || streamUrl.includes('.m3u8') || track.platform === 'local') return null;
-    const cid = getTrackCanonicalId(track);
-    if (!cid) return null;
-
-    if (trackBlobMemoryCache.has(cid)) {
-      const entry = trackBlobMemoryCache.get(cid);
-      entry.lastAccessed = Date.now();
-      return entry;
-    }
-
-    if (inflightBlobDownloads.has(cid)) {
-      return inflightBlobDownloads.get(cid);
-    }
-
-    const downloadPromise = (async () => {
-      try {
-        const fullUrl = streamUrl.startsWith('http') ? streamUrl : `${getApiBaseUrl()}${streamUrl}`;
-        const res = await fetch(fullUrl, {
-          signal: signal || undefined,
-          headers: { 'Accept': 'audio/*, */*' }
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const blob = await res.blob();
-        if (!blob || blob.size < 1.5 * 1024 * 1024) throw new Error('Blob empty or partial burst');
-
-        evictOldestBlobIfNeeded();
-        const blobUrl = URL.createObjectURL(blob);
-        const entry = {
-          blob,
-          blobUrl,
-          size: blob.size,
-          lastAccessed: Date.now()
-        };
-        trackBlobMemoryCache.set(cid, entry);
-        return entry;
-      } catch (err) {
-        return null;
-      } finally {
-        inflightBlobDownloads.delete(cid);
-      }
-    })();
-
-    inflightBlobDownloads.set(cid, downloadPromise);
-    return downloadPromise;
+    // Pure streaming mode: do not store multi-megabyte audio files in JS heap
+    return null;
   }
 
   function safeSeekTo(targetTime) {
@@ -4902,7 +4895,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           hlsInstance = null;
         }
         el.nativeAudio.preload = 'auto';
-        if (track._preloadedStreamUrl.includes('.m3u8') && window.Hls && Hls.isSupported()) {
+        if (track._preloadedStreamUrl.includes('.m3u8') && window.Hls && Hls.isSupported() && !(window.electronAPI && window.electronAPI.isTauri)) {
           hlsInstance = new Hls({ enableWorker: true, lowLatencyMode: true, maxBufferLength: 30, maxMaxBufferLength: 60, maxBufferSize: 30 * 1000 * 1000 });
           hlsInstance.on(Hls.Events.ERROR, (_, errData) => {
             if (errData && errData.fatal) {
@@ -4972,21 +4965,29 @@ document.addEventListener('DOMContentLoaded', async () => {
         track._preloadedStreamUrl = data.streamUrl;
 
         el.nativeAudio.preload = 'auto';
-        if ((data.isHls || data.streamUrl.includes('.m3u8')) && window.Hls && Hls.isSupported()) {
-          hlsInstance = new Hls({ enableWorker: true, lowLatencyMode: true, maxBufferLength: 30, maxMaxBufferLength: 60, maxBufferSize: 30 * 1000 * 1000 });
-          hlsInstance.on(Hls.Events.ERROR, (_, errData) => {
-            if (errData && errData.fatal) {
-              if (errData.type === Hls.ErrorTypes.NETWORK_ERROR) hlsInstance.startLoad();
-              else if (errData.type === Hls.ErrorTypes.MEDIA_ERROR) hlsInstance.recoverMediaError();
-            }
-          });
-          hlsInstance.loadSource(data.streamUrl);
-          hlsInstance.attachMedia(el.nativeAudio);
-          hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
-            if (currentToken === state.loadToken) {
-              playSmooth();
-            }
-          });
+        if (data.isHls || data.streamUrl.includes('.m3u8')) {
+          if (window.electronAPI && window.electronAPI.isTauri) {
+            el.nativeAudio.src = `${getApiBaseUrl()}/api/stream?url=${encodeURIComponent(track.url || data.streamUrl)}&platform=${encodeURIComponent(track.platform || 'soundcloud')}&id=${encodeURIComponent(track.id || '')}`;
+            playSmooth();
+          } else if (window.Hls && Hls.isSupported()) {
+            hlsInstance = new Hls({ enableWorker: true, lowLatencyMode: true, maxBufferLength: 30, maxMaxBufferLength: 60, maxBufferSize: 30 * 1000 * 1000 });
+            hlsInstance.on(Hls.Events.ERROR, (_, errData) => {
+              if (errData && errData.fatal) {
+                if (errData.type === Hls.ErrorTypes.NETWORK_ERROR) hlsInstance.startLoad();
+                else if (errData.type === Hls.ErrorTypes.MEDIA_ERROR) hlsInstance.recoverMediaError();
+              }
+            });
+            hlsInstance.loadSource(data.streamUrl);
+            hlsInstance.attachMedia(el.nativeAudio);
+            hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
+              if (currentToken === state.loadToken) {
+                playSmooth();
+              }
+            });
+          } else {
+            el.nativeAudio.src = data.streamUrl;
+            playSmooth();
+          }
         } else {
           el.nativeAudio.src = data.streamUrl;
           playSmooth();
@@ -5034,7 +5035,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // Only attach HLS if the native audio stream is NOT already playing smoothly!
             const isPlayingHealthy = el.nativeAudio && !el.nativeAudio.paused && !el.nativeAudio.error && el.nativeAudio.currentTime > 0.1;
-            if (!isPlayingHealthy && data.isHls && window.Hls && Hls.isSupported()) {
+            if (!isPlayingHealthy && data.isHls && window.Hls && Hls.isSupported() && !(window.electronAPI && window.electronAPI.isTauri)) {
               if (hlsInstance) {
                 try { hlsInstance.destroy(); } catch (_) {}
                 hlsInstance = null;
@@ -9119,24 +9120,39 @@ document.addEventListener('DOMContentLoaded', async () => {
       el.scrubberTrack.appendChild(tooltip);
     }
     const rect = el.scrubberTrack.getBoundingClientRect();
+    const zoom = parseFloat(document.body.style.zoom) || 1;
+    const trackWidth = el.scrubberTrack.clientWidth || (rect.width / zoom);
+    const mouseX = (e.clientX - rect.left) / zoom;
+
     const padLeft = 5.5;
-    const trackWidth = rect.width - 2 * padLeft;
-    let pos = trackWidth > 0 ? (e.clientX - rect.left - padLeft) / trackWidth : 0;
+    const padRight = 5.5;
+    const usableTrackWidth = Math.max(1, trackWidth - padLeft - padRight);
+    let pos = (mouseX - padLeft) / usableTrackWidth;
     pos = Math.max(0, Math.min(1, pos));
     const dur = getReliableTrackDuration();
     const hoverTime = pos * dur;
     tooltip.textContent = formatDuration(hoverTime);
-    const clampedX = Math.max(padLeft, Math.min(rect.width - padLeft, e.clientX - rect.left));
-    tooltip.style.left = `${clampedX}px`;
+
+    const tipWidth = tooltip.offsetWidth || 46;
+    const halfTip = tipWidth / 2;
+    const minCenter = halfTip;
+    const maxCenter = Math.max(halfTip, trackWidth - halfTip);
+    const clampedCenter = Math.max(minCenter, Math.min(maxCenter, mouseX));
+
+    tooltip.style.left = `${clampedCenter}px`;
     tooltip.classList.add('visible');
   }
 
   function updateScrubberPositionFromEvent(e) {
     if (!el.scrubberTrack) return 0;
     const rect = el.scrubberTrack.getBoundingClientRect();
+    const zoom = parseFloat(document.body.style.zoom) || 1;
+    const trackWidth = el.scrubberTrack.clientWidth || (rect.width / zoom);
+    const mouseX = (e.clientX - rect.left) / zoom;
     const padLeft = 5.5;
-    const trackWidth = rect.width - 2 * padLeft;
-    let pos = trackWidth > 0 ? (e.clientX - rect.left - padLeft) / trackWidth : 0;
+    const padRight = 5.5;
+    const usableTrackWidth = Math.max(1, trackWidth - padLeft - padRight);
+    let pos = (mouseX - padLeft) / usableTrackWidth;
     pos = Math.max(0, Math.min(1, pos));
     const dur = getReliableTrackDuration();
     const targetTime = pos * dur;
@@ -11563,7 +11579,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       ${!isAlbum ? `
       <div class="track-row-thumb-wrap">
         <svg class="track-row-fallback-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
-        ${rowThumb ? `<img class="track-row-thumb" src="${escapeHtml(rowThumb)}" alt="" onerror="this.style.display='none'">` : ''}
+        ${rowThumb ? `<img class="track-row-thumb" src="${escapeHtml(rowThumb)}" alt="" loading="lazy" decoding="async" onerror="this.style.display='none'">` : ''}
       </div>` : ''}
       <div class="track-row-info">
       <span class="track-row-title">${(context === 'favorites' || context === 'playlist') && isTrackPinned(track) ? '<svg class="track-pin-mark" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 3h6l-1 7 3 3v2H7v-2l3-3-1-7z"/></svg>' : ''}${escapeHtml(track.title || 'untitled')}</span>
@@ -11760,6 +11776,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   const activeScrollContainers = new Set();
+  window.addEventListener('resize', () => {
+    activeScrollContainers.forEach(c => {
+      if (c && typeof c._renderChunk === 'function' && c.isConnected && c.offsetParent) {
+        c._renderChunk();
+      }
+    });
+  });
   function detachAllVirtualScrollHandlers() {
     const scrollParent = document.querySelector('.main-content');
     if (!scrollParent) return;
@@ -11859,7 +11882,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       }, 250);
     }
 
-    const itemHeight = 68;
+    let itemHeight = context === 'artist' ? 76 : 68;
     const overscan = 15;
     const initialTotalHeight = (tracks ? tracks.length : 0) * itemHeight;
     container.style.boxSizing = 'border-box';
@@ -11875,6 +11898,16 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (!scrollParent || container._isDraggingReorder) return;
       const currentList = container._currentTracks || tracks;
       if (!currentList || currentList.length === 0) return;
+
+      const sampleRow = container.querySelector('.track-row');
+      if (sampleRow && sampleRow.offsetHeight > 0) {
+        const measuredRowH = sampleRow.offsetHeight;
+        const computedGap = parseFloat(window.getComputedStyle(container).gap) || 4;
+        if (measuredRowH + computedGap > 20) {
+          itemHeight = measuredRowH + computedGap;
+        }
+      }
+
       const totalListHeight = currentList.length * itemHeight;
       const desiredHeight = totalListHeight > 0 ? `${totalListHeight}px` : '';
       if (container.style.height !== desiredHeight) {
@@ -11888,26 +11921,27 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
       
       let relativeTop = 0;
-      if (scrollParent && container.isConnected) {
+      let curr = container;
+      while (curr && curr !== scrollParent && curr !== document.body) {
+        relativeTop += curr.offsetTop || 0;
+        curr = curr.offsetParent;
+      }
+      if (relativeTop <= 0 && scrollParent && container.isConnected) {
         const parentRect = scrollParent.getBoundingClientRect();
         const containerRect = container.getBoundingClientRect();
         if (parentRect.height > 0) {
-          relativeTop = Math.max(0, containerRect.top - parentRect.top + scrollParent.scrollTop);
-        }
-      }
-      if (relativeTop <= 0 && container.offsetParent) {
-        let curr = container;
-        while (curr && curr !== scrollParent && curr !== document.body) {
-          relativeTop += curr.offsetTop || 0;
-          curr = curr.offsetParent;
+          const zoom = parseFloat(document.body.style.zoom) || 1;
+          relativeTop = Math.max(0, (containerRect.top - parentRect.top) / zoom + scrollParent.scrollTop);
         }
       }
       if (relativeTop <= 0 && context === 'playlist') {
         relativeTop = 320;
       }
       
-      const visibleTop = Math.max(0, scrollParent.scrollTop - relativeTop);
-      const clientHeight = (scrollParent && scrollParent.clientHeight > 0) ? scrollParent.clientHeight : (window.innerHeight || 800);
+      const zoom = parseFloat(document.body.style.zoom) || 1;
+      const clientHeight = (scrollParent && scrollParent.clientHeight > 0) ? scrollParent.clientHeight : ((window.innerHeight || 800) / zoom);
+      const maxVisibleTop = Math.max(0, totalListHeight - clientHeight);
+      const visibleTop = Math.min(Math.max(0, scrollParent.scrollTop - relativeTop), maxVisibleTop);
 
       let startIndex = Math.floor(visibleTop / itemHeight) - overscan;
       let endIndex = Math.ceil((visibleTop + clientHeight) / itemHeight) + overscan;
@@ -11940,11 +11974,33 @@ document.addEventListener('DOMContentLoaded', async () => {
       const padBottom = Math.max(0, currentList.length - endIndex) * itemHeight;
       container.style.paddingTop = `${padTop}px`;
       container.style.paddingBottom = `${padBottom}px`;
+      if (container.children && container.children.length > 0) {
+        for (let i = 0; i < container.children.length; i++) {
+          const oldChild = container.children[i];
+          if (oldChild && oldChild._trackData) oldChild._trackData = null;
+        }
+      }
       if (typeof container.replaceChildren === 'function') {
         container.replaceChildren(fragment);
       } else {
         container.innerHTML = '';
         container.appendChild(fragment);
+      }
+      if (!container._hasInitialRendered) {
+        const firstRenderedRow = container.querySelector('.track-row');
+        if (firstRenderedRow && firstRenderedRow.offsetHeight > 0) {
+          const measuredH = firstRenderedRow.offsetHeight;
+          const compGap = parseFloat(window.getComputedStyle(container).gap) || 4;
+          const calibratedH = measuredH + compGap;
+          if (calibratedH > 20 && Math.abs(calibratedH - itemHeight) > 0.5) {
+            itemHeight = calibratedH;
+            const newTotalHeight = currentList.length * itemHeight;
+            container.style.height = `${newTotalHeight}px`;
+            container.style.minHeight = `${newTotalHeight}px`;
+            container.style.paddingTop = `${startIndex * itemHeight}px`;
+            container.style.paddingBottom = `${Math.max(0, currentList.length - endIndex) * itemHeight}px`;
+          }
+        }
       }
       container._hasInitialRendered = true;
       highlightPlayingRow();
@@ -14558,7 +14614,22 @@ function updateNavIndicator(animate) {
     new ResizeObserver(() => updateNavIndicator(false)).observe(sidebarNavElem);
   }
 
+  function syncTaskbarPlaybackState(playing) {
+    const isP = !!playing;
+    try {
+      if (window.__TAURI__?.core?.invoke) {
+        window.__TAURI__.core.invoke('taskbar_playback_state', { playing: isP });
+      } else if (window.__TAURI_INTERNALS__?.invoke) {
+        window.__TAURI_INTERNALS__.invoke('taskbar_playback_state', { playing: isP });
+      } else if (window.electronAPI && typeof window.electronAPI.taskbarPlaybackState === 'function') {
+        window.electronAPI.taskbarPlaybackState(isP);
+      }
+    } catch (_) {}
+  }
+
   function setPlayPauseState(playing, animate = true) {
+    syncTaskbarPlaybackState(playing);
+    window.setPlayPauseState = setPlayPauseState;
     if (typeof setCoverRotationRate === 'function') setCoverRotationRate(playing);
     const btn = el.btnPlayPause;
     const tvkBtn = document.getElementById('btn-tvk-play');
@@ -14649,11 +14720,20 @@ function updateNavIndicator(animate) {
     });
   }
 
-  if (window.electronAPI) {
-    if (el.btnMinimize) el.btnMinimize.addEventListener('click', () => window.electronAPI.minimizeWindow());
-    if (el.btnMaximize) el.btnMaximize.addEventListener('click', () => window.electronAPI.maximizeWindow());
-    if (el.btnClose) el.btnClose.addEventListener('click', () => window.electronAPI.closeWindow());
+  function invokeTauriWindow(cmd) {
+    if (window.electronAPI) {
+      if (cmd === 'minimize' && typeof window.electronAPI.minimizeWindow === 'function') return window.electronAPI.minimizeWindow();
+      if (cmd === 'maximize' && typeof window.electronAPI.maximizeWindow === 'function') return window.electronAPI.maximizeWindow();
+      if (cmd === 'close' && typeof window.electronAPI.closeWindow === 'function') return window.electronAPI.closeWindow();
+    }
+    const tauriCmd = cmd === 'minimize' ? 'minimize_window' : cmd === 'maximize' ? 'toggle_maximize_window' : 'close_window';
+    if (window.__TAURI__?.core?.invoke) return window.__TAURI__.core.invoke(tauriCmd);
+    if (window.__TAURI_INTERNALS__?.invoke) return window.__TAURI_INTERNALS__.invoke(tauriCmd);
   }
+
+  if (el.btnMinimize) el.btnMinimize.addEventListener('click', () => invokeTauriWindow('minimize'));
+  if (el.btnMaximize) el.btnMaximize.addEventListener('click', () => invokeTauriWindow('maximize'));
+  if (el.btnClose) el.btnClose.addEventListener('click', () => invokeTauriWindow('close'));
 
   function goHome() {
     restoreDiscoverHomeState(true);
@@ -15067,49 +15147,10 @@ function bindCoverHoldZoom(wrapEl) {
   }
 
   function updateEngineWidthVar() {
-    const container = document.querySelector('.platform-switch-container');
     const accountPill = document.querySelector('.user-account-container');
     const accountW = (accountPill && accountPill.offsetWidth) ? (accountPill.offsetWidth + 12) : 130;
-    const isHidden = document.body.classList.contains('hide-engine-btns');
-    if (isHidden) {
-      document.documentElement.style.setProperty('--engine-w', `${accountW}px`);
-      document.documentElement.style.setProperty('--engine-gap', '0px');
-    } else {
-      const containerW = (container && container.offsetWidth) ? container.offsetWidth : 118;
-      const totalW = containerW + accountW;
-      document.documentElement.style.setProperty('--engine-w', `${totalW}px`);
-      document.documentElement.style.setProperty('--engine-gap', '16px');
-    }
-  }
-
-  const btnCompactEngineBtns = document.getElementById('btn-compact-engine-btns');
-  const isCompactEngine = localStorage.getItem('riff_compact_engine_btns') === '1';
-  document.body.classList.toggle('compact-engine-btns', isCompactEngine);
-  if (btnCompactEngineBtns) {
-    btnCompactEngineBtns.classList.toggle('active', isCompactEngine);
-    btnCompactEngineBtns.addEventListener('click', () => {
-      const next = !btnCompactEngineBtns.classList.contains('active');
-      btnCompactEngineBtns.classList.toggle('active', next);
-      document.body.classList.toggle('compact-engine-btns', next);
-      localStorage.setItem('riff_compact_engine_btns', next ? '1' : '0');
-      updateEngineWidthVar();
-      setTimeout(updateEngineWidthVar, 350);
-    });
-  }
-
-  const btnHideEngineBtns = document.getElementById('btn-hide-engine-btns');
-  const isHideEngine = localStorage.getItem('riff_hide_engine_btns') === '1';
-  document.body.classList.toggle('hide-engine-btns', isHideEngine);
-  if (btnHideEngineBtns) {
-    btnHideEngineBtns.classList.toggle('active', isHideEngine);
-    btnHideEngineBtns.addEventListener('click', () => {
-      const next = !btnHideEngineBtns.classList.contains('active');
-      btnHideEngineBtns.classList.toggle('active', next);
-      document.body.classList.toggle('hide-engine-btns', next);
-      localStorage.setItem('riff_hide_engine_btns', next ? '1' : '0');
-      updateEngineWidthVar();
-      setTimeout(updateEngineWidthVar, 350);
-    });
+    document.documentElement.style.setProperty('--engine-w', `${accountW}px`);
+    document.documentElement.style.setProperty('--engine-gap', '0px');
   }
 
   const btnPersistSound = document.getElementById('btn-persist-sound-settings');
@@ -15350,11 +15391,18 @@ function bindCoverHoldZoom(wrapEl) {
 
   const btnRailNewPlaylist = document.getElementById('btn-rail-new-playlist');
   if (btnRailNewPlaylist) {
+    btnRailNewPlaylist.removeAttribute('title');
+    const existingTip = btnRailNewPlaylist.querySelector('.rail-playlist-tooltip');
+    if (existingTip) existingTip.remove();
     btnRailNewPlaylist.addEventListener('click', () => {
       if (el.newPlaylistInput) el.newPlaylistInput.value = '';
       if (el.createPlaylistModal) openModal(el.createPlaylistModal);
       if (el.newPlaylistInput) el.newPlaylistInput.focus();
     });
+  }
+  const btnNewPlaylistDirect = document.getElementById('btn-new-playlist');
+  if (btnNewPlaylistDirect) {
+    btnNewPlaylistDirect.removeAttribute('title');
   }
 
   if (el.btnCancelNewPlaylist) {
@@ -17124,7 +17172,7 @@ function bindCoverHoldZoom(wrapEl) {
   const advButtons = document.querySelectorAll('.effect-switch-btn[data-adv]');
   advButtons.forEach(btn => {
     const key = btn.dataset.adv;
-    const defaultVal = key === 'reduce_motion' ? systemPrefersReducedMotion() : (key === 'mesh_gradient' || key === 'mesh_cover_color' || key === 'clip_fx' || key === 'intensity_bg' || key === 'hide_titlebar' || key === 'classic_sidebar') ? false : true;
+    const defaultVal = key === 'reduce_motion' ? systemPrefersReducedMotion() : (key === 'mesh_gradient' || key === 'mesh_cover_color' || key === 'clip_fx' || key === 'intensity_bg' || key === 'hide_titlebar' || key === 'classic_sidebar' || key === 'hide_trending') ? false : true;
     const currentVal = getAdv(key, defaultVal);
     btn.classList.toggle('active', currentVal);
 
@@ -17145,6 +17193,17 @@ function bindCoverHoldZoom(wrapEl) {
         document.body.classList.toggle('hide-titlebar', !!newVal);
       } else if (key === 'autohide_timestamps') {
         document.body.classList.toggle('keep-bar-timestamps', !newVal);
+      } else if (key === 'hide_trending') {
+        document.body.classList.toggle('hide-trending', !!newVal);
+        const sec = document.getElementById('sp-trend-sec');
+        if (sec) {
+          if (newVal) {
+            sec.hidden = true;
+          } else {
+            sec.hidden = false;
+            renderTrending();
+          }
+        }
       } else if (key === 'intensity_bg') {
         updateThemeFromState();
       } else if (key === 'mesh_gradient') {
@@ -17495,14 +17554,16 @@ function bindCoverHoldZoom(wrapEl) {
 
   function updateCoverAnimVisibility() {
     const isHidden = document.hidden || document.body.classList.contains('hidden-window');
-    const playbar = el.playbar || document.getElementById('playbar');
-    const isBarHidden = playbar && playbar.offsetParent === null;
-    if (isHidden || isBarHidden) {
+    if (isHidden) {
       if (m3c && m3c.raf) {
         cancelAnimationFrame(m3c.raf);
         m3c.raf = 0;
       }
     } else if (typeof m3cEnabled === 'function' && m3cEnabled()) {
+      if (m3c) {
+        m3c.last = performance.now();
+        m3cDraw(m3c.last);
+      }
       m3cStart();
     }
   }
@@ -25641,7 +25702,7 @@ function bindCoverHoldZoom(wrapEl) {
     const sec = document.getElementById('sp-trend-sec');
     const row = document.getElementById('sp-trend');
     if (!sec || !row) return;
-    if (!getAdv('my_wave', true)) {
+    if (getAdv('hide_trending', false) || document.body.classList.contains('hide-trending') || !getAdv('my_wave', true)) {
       sec.hidden = true;
       return;
     }
