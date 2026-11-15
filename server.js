@@ -1263,29 +1263,127 @@ function parseYtmDuration(s) {
   return 0;
 }
 
+function parseYtmViewsOrPlays(text) {
+  if (!text || typeof text !== 'string') return 0;
+  const t = text.toLowerCase().replace(/\u00a0/g, ' ').replace(/(?:dinlenme|görüntüleme|plays|views)/g, '').trim();
+  const m = t.match(/([\d\.,]+)\s*([a-zğüşöçı]*)/);
+  if (!m) return 0;
+  let raw = m[1];
+  if (raw.includes('.') && raw.includes(',')) {
+    raw = raw.replace(/\./g, '').replace(',', '.');
+  } else {
+    raw = raw.replace(',', '.');
+  }
+  const val = parseFloat(raw);
+  if (isNaN(val)) return 0;
+  const unit = m[2] || '';
+  if (unit.includes('mr') || unit.includes('mlr')) return Math.round(val * 1000000000);
+  if (unit.includes('mn') || unit.includes('m')) return Math.round(val * 1000000);
+  if (unit.includes('b') || unit.includes('k')) return Math.round(val * 1000);
+  return Math.round(val);
+}
+
 function parseYtmSongs(json) {
   const out = [];
+  const seenIds = new Set();
   const tabs = (json && json.contents && json.contents.tabbedSearchResultsRenderer && json.contents.tabbedSearchResultsRenderer.tabs) || [];
   const sections = (tabs[0] && tabs[0].tabRenderer && tabs[0].tabRenderer.content && tabs[0].tabRenderer.content.sectionListRenderer && tabs[0].tabRenderer.content.sectionListRenderer.contents) || [];
+
+  // Phase 1: Parse MusicCardShelfRenderer (Top Hit / Top Result)
+  for (const section of sections) {
+    if (section && section.musicCardShelfRenderer) {
+      const card = section.musicCardShelfRenderer;
+      const title = (card.title && card.title.runs && card.title.runs.map(x => x.text).join('').trim()) || '';
+      let videoId = card.onTap && card.onTap.watchEndpoint && card.onTap.watchEndpoint.videoId;
+      if (!videoId || !/^[\w-]{11}$/.test(videoId)) {
+        if (Array.isArray(card.buttons)) {
+          for (const b of card.buttons) {
+            const cmd = b && b.buttonRenderer && b.buttonRenderer.command;
+            const bVid = cmd && cmd.watchEndpoint && cmd.watchEndpoint.videoId;
+            if (bVid && /^[\w-]{11}$/.test(bVid)) {
+              videoId = bVid;
+              break;
+            }
+          }
+        }
+      }
+
+      if (videoId && /^[\w-]{11}$/.test(videoId) && title) {
+        const subRuns = (card.subtitle && card.subtitle.runs) || [];
+        const segments = [];
+        let cur = [];
+        for (const run of subRuns) {
+          if (run.text === ' • ') {
+            segments.push(cur.join('').trim());
+            cur = [];
+          } else {
+            cur.push(run.text);
+          }
+        }
+        segments.push(cur.join('').trim());
+        const clean = segments.filter(s => s && !/^(song|şarkı|video)$/i.test(s));
+
+        let duration = 0;
+        let artist = 'Unknown Artist';
+        for (const seg of clean) {
+          if (parseYtmDuration(seg)) {
+            duration = parseYtmDuration(seg);
+          } else if (artist === 'Unknown Artist' && !/(?:görüntüleme|dinlenme|views|plays)/i.test(seg)) {
+            artist = seg;
+          }
+        }
+
+        const thumbs = (card.thumbnail && card.thumbnail.musicThumbnailRenderer && card.thumbnail.musicThumbnailRenderer.thumbnail && card.thumbnail.musicThumbnailRenderer.thumbnail.thumbnails) || [];
+        let thumbnail = thumbs.length ? thumbs[thumbs.length - 1].url : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+        thumbnail = thumbnail.replace(/=w\d+-h\d+[^&]*$/, '=w544-h544');
+
+        out.push({
+          id: videoId,
+          title,
+          artist: artist.replace(/\s*-\s*Topic$/i, '').trim(),
+          album: '',
+          duration: duration || 180,
+          thumbnail,
+          url: `https://www.youtube.com/watch?v=${videoId}`
+        });
+        seenIds.add(videoId);
+      }
+    }
+  }
+
+  // Phase 2: Parse standard list items (shelves and item sections)
   for (const section of sections) {
     const items = [];
+    let shelfArtistFallback = '';
+    if (section && section.musicCardShelfRenderer) {
+      shelfArtistFallback = (section.musicCardShelfRenderer.title && section.musicCardShelfRenderer.title.runs && section.musicCardShelfRenderer.title.runs.map(x => x.text).join('').trim()) || '';
+      if (Array.isArray(section.musicCardShelfRenderer.contents)) {
+        items.push(...section.musicCardShelfRenderer.contents);
+      }
+    }
     if (section && section.musicShelfRenderer && Array.isArray(section.musicShelfRenderer.contents)) {
       items.push(...section.musicShelfRenderer.contents);
     }
     if (section && section.itemSectionRenderer && Array.isArray(section.itemSectionRenderer.contents)) {
       items.push(...section.itemSectionRenderer.contents);
     }
-    if (section && section.musicCardShelfRenderer && Array.isArray(section.musicCardShelfRenderer.contents)) {
-      items.push(...section.musicCardShelfRenderer.contents);
-    }
+
     for (const wrap of items) {
       const r = wrap && wrap.musicResponsiveListItemRenderer;
       if (!r) continue;
       const cols = r.flexColumns || [];
       const runsOf = (i) => (cols[i] && cols[i].musicResponsiveListItemFlexColumnRenderer && cols[i].musicResponsiveListItemFlexColumnRenderer.text && cols[i].musicResponsiveListItemFlexColumnRenderer.text.runs) || [];
+
+      const col1Text = runsOf(1).map(x => x.text).join('').trim();
+      // Filter out non-song items: podcast episodes, channels, subscriber counts, monthly listeners
+      if (/(?:bölüm|episode|podcast|abone|subscriber|aylık kitle|monthly audience)/i.test(col1Text)) {
+        continue;
+      }
+
       const overlay = r.overlay && r.overlay.musicItemThumbnailOverlayRenderer && r.overlay.musicItemThumbnailOverlayRenderer.content && r.overlay.musicItemThumbnailOverlayRenderer.content.musicPlayButtonRenderer;
       const videoId = (r.playlistItemData && r.playlistItemData.videoId) || (overlay && overlay.playNavigationEndpoint && overlay.playNavigationEndpoint.watchEndpoint && overlay.playNavigationEndpoint.watchEndpoint.videoId);
       if (!videoId || !/^[\w-]{11}$/.test(videoId)) continue;
+      if (seenIds.has(videoId)) continue;
 
       const title = runsOf(0).map((x) => x.text).join('').trim();
       const segments = [];
@@ -1294,10 +1392,13 @@ function parseYtmSongs(json) {
         if (run.text === ' • ') { segments.push(cur.join('').trim()); cur = []; } else cur.push(run.text);
       }
       segments.push(cur.join('').trim());
-      const clean = segments.filter((s) => s && !/^(song|video)$/i.test(s));
+      const clean = segments.filter((s) => s && !/^(song|şarkı|video)$/i.test(s));
+
       let duration = 0;
-      if (clean.length && parseYtmDuration(clean[clean.length - 1])) duration = parseYtmDuration(clean.pop());
-      const artist = (clean[0] || '').replace(/\s*-\s*Topic$/i, '').trim();
+      if (clean.length && parseYtmDuration(clean[clean.length - 1])) {
+        duration = parseYtmDuration(clean.pop());
+      }
+      let artist = (clean[0] || shelfArtistFallback || 'Unknown Artist').replace(/\s*-\s*Topic$/i, '').trim();
       const album = clean[1] || '';
 
       const thumbs = (r.thumbnail && r.thumbnail.musicThumbnailRenderer && r.thumbnail.musicThumbnailRenderer.thumbnail && r.thumbnail.musicThumbnailRenderer.thumbnail.thumbnails) || [];
@@ -1314,6 +1415,7 @@ function parseYtmSongs(json) {
         thumbnail,
         url: `https://www.youtube.com/watch?v=${videoId}`
       });
+      seenIds.add(videoId);
     }
   }
   return out;
@@ -1327,13 +1429,14 @@ function searchYouTubeMusic(query, retryWithoutParams = true) {
           client: {
             clientName: 'WEB_REMIX',
             clientVersion: '1.20240424.01.00',
-            hl: 'en',
-            gl: 'US'
+            hl: 'tr',
+            gl: 'TR'
           }
         },
         query: query
       };
       if (withParams) {
+        // Param for songs filter with top hit precision
         payloadObj.params = 'Eg-KAQwIABAAGAAgACgB';
       }
       return JSON.stringify(payloadObj);
@@ -1397,7 +1500,8 @@ function searchYouTubeMusic(query, retryWithoutParams = true) {
       req.end();
     };
 
-    runSearch(true);
+    // First attempt with default search to reliably capture Top Result Hit Card, falling back if empty
+    runSearch(false);
   });
 }
 
