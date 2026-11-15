@@ -138,7 +138,21 @@
     rustAudioSetVolume: (volume) => invoke('rust_audio_set_volume', { volume }),
     rustAudioSetSpeed: (speed) => invoke('rust_audio_set_speed', { speed }),
     rustAudioGetState: () => invoke('rust_audio_get_state'),
-    rustAudioGetFrequencyData: () => cachedRustFreqData,
+    rustAudioGetFrequencyData: () => {
+      const now = performance.now();
+      if (_isPlaying && !document.hidden && !isFetchingFreq && now - lastFreqFetchMs >= 32) {
+        lastFreqFetchMs = now;
+        isFetchingFreq = true;
+        invoke('rust_audio_get_frequency_data').then(data => {
+          if (data && data.length) {
+            cachedRustFreqData.set(data.subarray ? data.subarray(0, cachedRustFreqData.length) : data.slice(0, cachedRustFreqData.length));
+          }
+        }).catch(() => {}).finally(() => {
+          isFetchingFreq = false;
+        });
+      }
+      return cachedRustFreqData;
+    },
     getCacheLyrics: (trackId) => invoke('get_cache_lyrics', { trackId }),
     saveCacheLyrics: (trackId, lyricsJson) => invoke('save_cache_lyrics', { trackId, lyricsJson }),
     getCacheStats: () => invoke('get_cache_stats'),
@@ -159,6 +173,7 @@
   let currentLoadToken = 0;
   let cachedRustFreqData = new Uint8Array(64);
   let isFetchingFreq = false;
+  let lastFreqFetchMs = 0;
 
   const hookNativeAudioElement = (audio) => {
     if (!audio || audio.__rustAudioHooked) return;
@@ -198,11 +213,16 @@
           _isPlaying = false;
           _hasEnded = false;
           _isLoading = false;
+          _currentPosition = 0;
+          lastDispatchedPos = 0;
           invoke('rust_audio_pause').catch(() => {});
           return;
         }
         _isLoading = true;
         _hasEnded = false;
+        _currentPosition = 0;
+        lastDispatchedPos = 0;
+        cachedRustFreqData.fill(0);
         audio.dispatchEvent(new Event('loadstart'));
         audio.dispatchEvent(new Event('waiting'));
 
@@ -249,6 +269,8 @@
         }).then((st) => {
           if (loadToken !== currentLoadToken) return;
           _isLoading = false;
+          _currentPosition = (st && typeof st.position === 'number') ? st.position : 0;
+          lastDispatchedPos = _currentPosition;
           if (st && typeof st.duration === 'number' && st.duration > 0) {
             _currentDuration = st.duration;
           } else if (durHint && durHint > 0) {
@@ -259,6 +281,7 @@
           audio.dispatchEvent(new Event('canplay'));
           audio.dispatchEvent(new Event('canplaythrough'));
           if (_isPlaying) {
+            invoke('rust_audio_play').catch(() => {});
             audio.dispatchEvent(new Event('playing'));
           }
         }).catch((err) => {
@@ -374,9 +397,29 @@
 
     // Continuous sync loop with Rust audio core state
     let lastDispatchedPos = 0;
+    let isFetchingState = false;
+    let idleTicks = 0;
     setInterval(() => {
+      if (isFetchingState) return;
+      if (!_isPlaying && !_isLoading) {
+        if (document.hidden) return;
+        idleTicks = (idleTicks + 1) % 6;
+        if (idleTicks !== 0) return; // Poll only ~3.5x/sec when paused in foreground
+      } else {
+        idleTicks = 0;
+      }
+      isFetchingState = true;
+      const pollToken = currentLoadToken;
       invoke('rust_audio_get_state').then(st => {
-        if (!st) return;
+        if (!st || pollToken !== currentLoadToken) return;
+        if (_isLoading || st.loading) {
+          _currentPosition = 0;
+          if (typeof st.duration === 'number' && st.duration > 0 && st.duration !== _currentDuration) {
+            _currentDuration = st.duration;
+            audio.dispatchEvent(new Event('durationchange'));
+          }
+          return;
+        }
         const wasPlaying = _isPlaying;
         _isPlaying = !!st.playing;
         _currentPosition = typeof st.position === 'number' ? st.position : 0;
@@ -405,26 +448,12 @@
           audio.dispatchEvent(new Event('pause'));
           invoke('taskbar_playback_state', { playing: false }).catch(() => {});
         }
-      }).catch(() => {});
-    }, 45);
+      }).catch(() => {}).finally(() => {
+        isFetchingState = false;
+      });
+    }, 55);
 
-    // Fast polling loop for FFT frequency data (~30 FPS)
-    setInterval(() => {
-      if (_isPlaying && !document.hidden && !isFetchingFreq) {
-        isFetchingFreq = true;
-        invoke('rust_audio_get_frequency_data').then(data => {
-          if (data && data.length) {
-            cachedRustFreqData = new Uint8Array(data);
-          }
-        }).catch(() => {}).finally(() => {
-          isFetchingFreq = false;
-        });
-      } else if (!_isPlaying && cachedRustFreqData.some(v => v > 0)) {
-        for (let i = 0; i < cachedRustFreqData.length; i++) {
-          cachedRustFreqData[i] = Math.floor(cachedRustFreqData[i] * 0.7);
-        }
-      }
-    }, 33);
+    // Demand-driven FFT polling via rustAudioGetFrequencyData avoids background IPC when visualizers are hidden
   };
 
   const tryHookNativeAudio = () => {
