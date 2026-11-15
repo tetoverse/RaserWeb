@@ -8553,7 +8553,7 @@ body.perf .home-hero-track { transition: none; }
 #view-discover { position: relative; isolation: isolate; overflow: hidden; border-radius: inherit; min-height: 100%; height: 100%; }
 #view-discover > *:not(.home-ambient) { position: relative; z-index: 1; }
 .home-ambient { position: absolute; inset: -60px; z-index: 0; overflow: hidden; pointer-events: none; }
-.home-ambient-layer { position: absolute; inset: -25%; filter: blur(80px) saturate(1.8); opacity: 0; transition: opacity 700ms ease; will-change: opacity; pointer-events: none; }
+.home-ambient-layer { position: absolute; inset: -25%; opacity: 0; transition: opacity 700ms ease; pointer-events: none; }
 .home-ambient-layer.on { opacity: 0.85; }
 #my-wave-ambient-light { display: none !important; }
 body.perf .home-ambient-layer { filter: none; opacity: 0.3; }
@@ -8640,7 +8640,8 @@ body.perf .home-out, body.perf .home-in {
 #cover-bg { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; display: none; }
 body.cover-bg-on #cover-bg { display: block; }
 body.cover-bg-on #custom-bg, body.cover-bg-on .bg-mesh-layer { display: none; }
-.cover-bg-layer { position: absolute; inset: -15%; background-size: cover; background-position: center; filter: blur(90px) saturate(1.3); opacity: 0; transition: opacity 700ms ease; will-change: opacity; }
+.cover-bg-layer { position: absolute; inset: -15%; background-size: cover; background-position: center; filter: blur(90px) saturate(1.3); opacity: 0; transition: opacity 700ms ease; }
+.cover-bg-layer.preblurred { inset: 0; filter: none !important; }
 .cover-bg-layer.on { opacity: var(--cover-bg-brightness, .45); }
 body.perf #cover-bg { display: none; }
 body.perf #playlist-hero-fx,
@@ -9015,11 +9016,17 @@ body[data-theme="light"] #album-tracks-list .track-row:hover {
   background: var(--md-sys-color-surface-container-high, rgba(0, 0, 0, 0.05)) !important;
 }
 
-body.cover-bg-on.theme-light .cover-bg-layer.on,
-body.cover-bg-on.light .cover-bg-layer.on,
-body.cover-bg-on[data-theme="light"] .cover-bg-layer.on {
+body.cover-bg-on.theme-light .cover-bg-layer.on:not(.preblurred),
+body.cover-bg-on.light .cover-bg-layer.on:not(.preblurred),
+body.cover-bg-on[data-theme="light"] .cover-bg-layer.on:not(.preblurred) {
   opacity: calc(var(--cover-bg-brightness, 0.45) * 0.4) !important;
   filter: blur(90px) saturate(1.1) brightness(1.15) !important;
+}
+body.cover-bg-on.theme-light .cover-bg-layer.on.preblurred,
+body.cover-bg-on.light .cover-bg-layer.on.preblurred,
+body.cover-bg-on[data-theme="light"] .cover-bg-layer.on.preblurred {
+  opacity: calc(var(--cover-bg-brightness, 0.45) * 0.4) !important;
+  filter: none !important;
 }
 
 .presets-chips-container {

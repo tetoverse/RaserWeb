@@ -1800,6 +1800,33 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   let coverBgIdx = 0;
   let activeCoverBgUrl = '';
+  const blurredCoverCache = new Map();
+
+  function getPreblurredCoverUrl(img, url) {
+    const isLight = document.body.classList.contains('theme-light') || document.body.classList.contains('light') || document.body.dataset.theme === 'light';
+    const cacheKey = `${url}_${isLight ? 'L' : 'D'}`;
+    if (blurredCoverCache.has(cacheKey)) return blurredCoverCache.get(cacheKey);
+    try {
+      const cw = 96;
+      const ch = 96;
+      const pad = 24;
+      const canvas = document.createElement('canvas');
+      canvas.width = cw;
+      canvas.height = ch;
+      const ctx = canvas.getContext('2d');
+      ctx.filter = isLight ? 'blur(10px) saturate(1.1) brightness(1.15)' : 'blur(10px) saturate(1.3)';
+      ctx.drawImage(img, -pad, -pad, cw + pad * 2, ch + pad * 2);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      if (blurredCoverCache.size > 40) {
+        const firstKey = blurredCoverCache.keys().next().value;
+        blurredCoverCache.delete(firstKey);
+      }
+      blurredCoverCache.set(cacheKey, dataUrl);
+      return dataUrl;
+    } catch (_) {
+      return null;
+    }
+  }
 
   function setCoverBg(url) {
     const enabled = getAdv('cover_bg', true);
@@ -1823,10 +1850,33 @@ document.addEventListener('DOMContentLoaded', async () => {
       const nextLayer = layers[nextIdx];
       const prevLayer = layers[coverBgIdx];
 
-      nextLayer.style.backgroundImage = `url(${JSON.stringify(url)})`;
+      const preblurred = getPreblurredCoverUrl(img, url);
+      if (preblurred) {
+        nextLayer.classList.add('preblurred');
+        nextLayer.style.backgroundImage = `url(${JSON.stringify(preblurred)})`;
+      } else {
+        nextLayer.classList.remove('preblurred');
+        nextLayer.style.backgroundImage = `url(${JSON.stringify(url)})`;
+      }
       nextLayer.classList.add('on');
       prevLayer.classList.remove('on');
       coverBgIdx = nextIdx;
+    };
+    img.onerror = () => {
+      if (activeCoverBgUrl !== url || layers.length < 2) return;
+      const fallbackImg = new Image();
+      fallbackImg.onload = () => {
+        if (activeCoverBgUrl !== url) return;
+        const nextIdx = 1 - coverBgIdx;
+        const nextLayer = layers[nextIdx];
+        const prevLayer = layers[coverBgIdx];
+        nextLayer.classList.remove('preblurred');
+        nextLayer.style.backgroundImage = `url(${JSON.stringify(url)})`;
+        nextLayer.classList.add('on');
+        prevLayer.classList.remove('on');
+        coverBgIdx = nextIdx;
+      };
+      fallbackImg.src = url;
     };
     img.src = url;
   }
