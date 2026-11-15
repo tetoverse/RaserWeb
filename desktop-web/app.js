@@ -4913,7 +4913,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         } else {
           el.nativeAudio.src = track._preloadedStreamUrl;
           playSmooth();
-          bufferTrackToBlob(track, track._preloadedStreamUrl).catch(() => {});
+          if (!(window.electronAPI && window.electronAPI.isTauri)) {
+            bufferTrackToBlob(track, track._preloadedStreamUrl).catch(() => {});
+          }
         }
         applyAudioSettings();
         return;
