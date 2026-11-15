@@ -129,14 +129,16 @@
   }
 
   // Safe localStorage helper with automatic change detection
-  const origSetItem = localStorage.setItem.bind(localStorage);
-  localStorage.setItem = function(key, val) {
-    origSetItem(key, val);
+  window.triggerFirebaseAutoSync = function(key) {
     if (!isSyncing && typeof key === 'string' && (key.startsWith('riff_') || key.startsWith('devsize_') || key.startsWith('raser_'))) {
       if (!key.endsWith('_cache') && !key.startsWith('riff_i18n_')) {
         triggerAutoSync();
       }
     }
+  };
+  localStorage.setItem = function(key, val) {
+    Storage.prototype.setItem.call(this, key, val);
+    window.triggerFirebaseAutoSync(key);
   };
 
   function getLocalJSON(key, defaultVal) {

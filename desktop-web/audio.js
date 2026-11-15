@@ -144,6 +144,13 @@
 
       this._attachedElement = audioElement;
 
+      if (typeof window !== 'undefined' && window.electronAPI && window.electronAPI.isTauri) {
+        this.graphInitialized = true;
+        this.applySettings(audioElement);
+        this._applyMasterVolume();
+        return;
+      }
+
       const isMobileDevice = typeof window !== 'undefined' && (
         window.innerWidth <= 840 ||
         /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
@@ -621,6 +628,9 @@
 
 
     getAnalyserNode() {
+      if (typeof window !== 'undefined' && window.electronAPI && window.electronAPI.isTauri) {
+        return { frequencyBinCount: 64 };
+      }
       return this.analyserNode;
     }
 
@@ -669,6 +679,16 @@
 
     getFrequencyData(buffer) {
       if (!buffer) return;
+      if (typeof window !== 'undefined' && window.electronAPI && window.electronAPI.isTauri && typeof window.electronAPI.rustAudioGetFrequencyData === 'function') {
+        const rustData = window.electronAPI.rustAudioGetFrequencyData();
+        if (rustData && rustData.length) {
+          const rlen = rustData.length;
+          for (let i = 0; i < buffer.length; i++) {
+            buffer[i] = rustData[i % rlen];
+          }
+          return;
+        }
+      }
       if (this.analyserNode) {
         if (!this._analyserConnected) this.setAnalyserEnabled(true);
         this.analyserNode.getByteFrequencyData(buffer);
