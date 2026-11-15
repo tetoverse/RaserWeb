@@ -3134,8 +3134,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   let scrubLastTime = 0;
   let lastDisplayedSec = -1;
   let lastTimeupdateSec = -1;
+  let renderIdleTimeoutId = 0;
 
   function stopVisualizers() {
+    if (renderIdleTimeoutId) {
+      clearTimeout(renderIdleTimeoutId);
+      renderIdleTimeoutId = 0;
+    }
     if (animationFrameId) {
       cancelAnimationFrame(animationFrameId);
       animationFrameId = null;
@@ -3249,6 +3254,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   let lastFrameTime = 0;
   function startVisualizers() {
     if (!state.isWindowVisible) return;
+    if (renderIdleTimeoutId) {
+      clearTimeout(renderIdleTimeoutId);
+      renderIdleTimeoutId = 0;
+    }
     if (animationFrameId) cancelAnimationFrame(animationFrameId);
 
     const analyserNode = audioEngine && audioEngine.getAnalyserNode ? audioEngine.getAnalyserNode() : null;
@@ -3284,10 +3293,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         hasDrawnPausedFrame = false;
       }
 
-      animationFrameId = requestAnimationFrame(renderLoop);
+      if (isDraggingScrubber) {
+        animationFrameId = requestAnimationFrame(renderLoop);
+      } else {
+        animationFrameId = 0;
+        renderIdleTimeoutId = setTimeout(() => {
+          renderIdleTimeoutId = 0;
+          if (!document.hidden && state.isWindowVisible) {
+            animationFrameId = requestAnimationFrame(renderLoop);
+          }
+        }, 28);
+      }
 
-      // Smooth 30-35 FPS lock to halve GPU compositor & backing store load without visual difference
-      if (timestamp - lastRenderTime < 28) return;
       lastRenderTime = timestamp;
 
       try {
@@ -3892,6 +3909,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (animationFrameId) {
         cancelAnimationFrame(animationFrameId);
         animationFrameId = null;
+      }
+      if (renderIdleTimeoutId) {
+        clearTimeout(renderIdleTimeoutId);
+        renderIdleTimeoutId = 0;
       }
       if (typeof cacheRafId !== 'undefined' && cacheRafId) {
         cancelAnimationFrame(cacheRafId);
@@ -6489,11 +6510,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   function startGradientLoop() {
     if (gradientRaf || !isLyricsViewVisible()) return;
     // When renderLoop is active during playback, it drives updateActiveGradient() directly without a separate rAF
-    if (state.isPlaying && animationFrameId) return;
+    if (state.isPlaying && (animationFrameId || renderIdleTimeoutId)) return;
     const tick = (now) => {
       gradientRaf = 0;
       if (!state.isPlaying || !state.isWindowVisible || document.hidden || !isGradientMode() || !isLyricsViewVisible()) return;
-      if (animationFrameId) return;
+      if (animationFrameId || renderIdleTimeoutId) return;
       if (now - lastGradientTick >= 28) {
         lastGradientTick = now;
         updateActiveGradient();
@@ -18023,7 +18044,7 @@ function bindCoverHoldZoom(wrapEl) {
   function m3cLoop(now) {
     m3c.raf = 0;
     // Defer to unified renderLoop while playing unless hover-transitioning
-    if (state.isPlaying && animationFrameId && Math.abs((m3c.isHovered ? 1 : 0) - m3c.hoverProgress) <= 0.002) {
+    if (state.isPlaying && (animationFrameId || renderIdleTimeoutId) && Math.abs((m3c.isHovered ? 1 : 0) - m3c.hoverProgress) <= 0.002) {
       return;
     }
     if (m3cStep(now, false)) {
@@ -18032,7 +18053,7 @@ function bindCoverHoldZoom(wrapEl) {
   }
   function m3cStart() {
     if (!m3c || m3c.raf) return;
-    if (state.isPlaying && animationFrameId && Math.abs((m3c.isHovered ? 1 : 0) - m3c.hoverProgress) <= 0.002) return;
+    if (state.isPlaying && (animationFrameId || renderIdleTimeoutId) && Math.abs((m3c.isHovered ? 1 : 0) - m3c.hoverProgress) <= 0.002) return;
     m3c.last = performance.now();
     m3c.raf = requestAnimationFrame(m3cLoop);
   }
