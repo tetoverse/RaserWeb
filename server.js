@@ -232,6 +232,62 @@ async function fetchDirectSoundCloudStream(scUrlOrId, queryFallback) {
  * Resolves direct unencrypted, unthrottled audio streams (itag 140 AAC 128kbps / itag 251 Opus 160kbps)
  * in ~200-350ms without spawning yt-dlp child processes.
  */
+const POT_CACHE_FILE = path.join(__dirname, 'data', 'pot_cache.json');
+let cachedPoToken = { poToken: '', visitorData: '', updatedAt: 0 };
+
+function loadPoTokenFromDisk() {
+  try {
+    if (fs.existsSync(POT_CACHE_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(POT_CACHE_FILE, 'utf8'));
+      if (parsed && parsed.poToken) {
+        cachedPoToken = {
+          poToken: String(parsed.poToken),
+          visitorData: String(parsed.visitorData || ''),
+          updatedAt: Number(parsed.updatedAt || Date.now())
+        };
+        console.log(`[PoToken] Restored cached PO-Token (len=${cachedPoToken.poToken.length}) from disk.`);
+      }
+    }
+  } catch (_) {}
+}
+
+function refreshBgutilPoToken() {
+  try {
+    const req = http.request('http://127.0.0.1:4416/get_pot', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': 2 },
+      timeout: 35000
+    }, (res) => {
+      let body = '';
+      res.on('data', c => { body += c; });
+      res.on('end', () => {
+        try {
+          const j = JSON.parse(body);
+          const tok = j.poToken || j.po_token;
+          const vd = j.contentBinding || j.visitorData || j.visitor_data;
+          if (tok) {
+            cachedPoToken = { poToken: String(tok), visitorData: String(vd || ''), updatedAt: Date.now() };
+            try {
+              fs.mkdirSync(path.dirname(POT_CACHE_FILE), { recursive: true });
+              fs.writeFileSync(POT_CACHE_FILE, JSON.stringify(cachedPoToken, null, 2), 'utf8');
+            } catch (_) {}
+          }
+        } catch (_) {}
+      });
+    });
+    req.on('error', () => {});
+    req.on('timeout', () => { try { req.destroy(); } catch (_) {} });
+    req.write('{}');
+    req.end();
+  } catch (_) {}
+}
+
+loadPoTokenFromDisk();
+if (!cachedPoToken.poToken || (Date.now() - cachedPoToken.updatedAt) > 2 * 3600 * 1000) {
+  setTimeout(refreshBgutilPoToken, 1000);
+}
+setInterval(refreshBgutilPoToken, 2 * 3600 * 1000).unref();
+
 function fetchYouTubeInnertubeStream(videoId, preferredQuality = '') {
   return new Promise((resolve, reject) => {
     if (!videoId || typeof videoId !== 'string' || !/^[\w-]{11}$/.test(videoId.trim())) {
@@ -250,22 +306,22 @@ function fetchYouTubeInnertubeStream(videoId, preferredQuality = '') {
           osName: 'iOS',
           osVersion: '18.3.2.22D82',
           hl: 'en',
-          gl: 'US'
+          gl: 'US',
+          ...(cachedPoToken.visitorData ? { visitorData: cachedPoToken.visitorData } : {})
         }
       },
-      videoId: cleanId
+      videoId: cleanId,
+      ...(cachedPoToken.poToken ? { serviceIntegrityDimensions: { poToken: cachedPoToken.poToken } } : {})
     });
 
-    const req = https.request('https://www.youtube.com/youtubei/v1/player', {
+    const req = https.request('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
       method: 'POST',
       agent: keepAliveHttpsAgent,
       family: 4,
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(payload),
-        'User-Agent': 'com.google.ios.youtube/20.10.4',
-        'X-YouTube-Client-Name': '5',
-        'X-YouTube-Client-Version': '20.10.4'
+        'User-Agent': 'com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)'
       },
       timeout: 8000
     }, (res) => {
@@ -308,8 +364,12 @@ function fetchYouTubeInnertubeStream(videoId, preferredQuality = '') {
             selected = audioFormats[0];
           }
 
+          const finalFastUrl = (cachedPoToken.poToken && !selected.url.includes('&pot='))
+            ? `${selected.url}&pot=${encodeURIComponent(cachedPoToken.poToken)}`
+            : selected.url;
+
           resolve({
-            url: selected.url,
+            url: finalFastUrl,
             itag: selected.itag,
             mimeType: selected.mimeType,
             bitrate: selected.bitrate || selected.audioBitrate,
@@ -387,11 +447,22 @@ function resolveFullStreamViaYtDlp(targetId, cleanTarget = '', isUrl = false) {
 
     const fallbackTarget = resolvedVideoId ? `https://www.youtube.com/watch?v=${resolvedVideoId}` : (isUrl ? cleanTarget : `ytsearch1:${cleanTarget}`);
     const cookiesPath = path.join(__dirname, 'cookies.txt');
-    const ytdlpArgs = ['--no-warnings', '--no-playlist', '--js-runtimes', 'node', ...(fs.existsSync(cookiesPath) ? ['--cookies', cookiesPath] : []), '-g', '-f', '140/ba/b', fallbackTarget];
+    const ytdlpArgs = [
+      '-4',
+      '--no-warnings',
+      '--no-playlist',
+      '--no-plugin-dirs',
+      '--cache-dir', '/tmp/raser-ytdlp-cache',
+      '--js-runtimes', 'node',
+      ...(fs.existsSync(cookiesPath) ? ['--cookies', cookiesPath] : []),
+      '--extractor-args', 'youtube:player_client=web_embedded;player_skip=webpage,hls,dash',
+      '-g', '-f', '140/ba',
+      fallbackTarget
+    ];
 
     let streamUrl = null;
 
-    // 1. Attempt local yt-dlp in a single process (tvhtml5,web + node js-runtime)
+    // 1. Attempt local yt-dlp in a single IPv4 cached process
     try {
       streamUrl = await new Promise((resolveYt, rejectYt) => {
         execFile('yt-dlp', ytdlpArgs, { timeout: 25000 }, (err, stdout) => {
@@ -425,16 +496,6 @@ function resolveFullStreamViaYtDlp(targetId, cleanTarget = '', isUrl = false) {
             });
             vpsReq.on('error', rejectVps);
           });
-        } catch (_) {}
-      }
-
-      // 3. Fallback to fast in-process Innertube stream
-      if (!streamUrl && targetId) {
-        try {
-          const fastInfo = await fetchYouTubeInnertubeStream(targetId);
-          if (fastInfo && fastInfo.url) {
-            streamUrl = fastInfo.url;
-          }
         } catch (_) {}
       }
     }
@@ -554,8 +615,11 @@ async function resolveAudioStreamDetails(target, platform = '', queryFallback = 
   } else {
     const cached = streamCache.get(cacheKey);
     if (cached && cached.expireAt > Date.now()) {
+      if (!cached.fullUrl && targetId && !inflightFullResolutions.has(cacheKey)) {
+        resolveFullStreamViaYtDlp(targetId, cleanTarget, isUrl).catch(() => {});
+      }
       if (!isSubsequentRange || cached.fullUrl) {
-        const chosenUrl = cached.fullUrl || ((isSubsequentRange || !cached.fastUrl) ? (cached.fullUrl || cached.url) : (cached.fastUrl || cached.url));
+        const chosenUrl = cached.fullUrl || (isSubsequentRange ? cached.url : (cached.fastUrl || cached.url));
         return {
           url: chosenUrl,
           itag: cached.itag || 140,
@@ -755,7 +819,7 @@ function streamHlsAudio(req, res, playlistUrl) {
   });
 }
 
-function pumpRemainderFromUrl(req, res, targetUrl, startByte, totalLength, redirectsLeft = 5) {
+function pumpRemainderFromUrl(req, res, targetUrl, startByte, totalLength, redirectsLeft = 5, retryCount = 0) {
   if (res.writableEnded || !res.writable) return;
   let parsed;
   try {
@@ -763,6 +827,22 @@ function pumpRemainderFromUrl(req, res, targetUrl, startByte, totalLength, redir
   } catch (e) {
     return res.end();
   }
+
+  // If c=WEB_EMBEDDED_PLAYER has epbp=1 and was minted < 3.8s ago (met parameter),
+  // wait out the remaining epbp=1 window before requesting the 1MB+ remainder.
+  const metSec = parseInt(parsed.searchParams.get('met') || '0', 10);
+  const epbp = parsed.searchParams.get('epbp');
+  if (metSec > 0 && epbp === '1' && retryCount === 0) {
+    const ageMs = Date.now() - (metSec * 1000);
+    if (ageMs >= 0 && ageMs < 3800) {
+      const waitMs = 3800 - ageMs;
+      console.log(`[pumpRemainderFromUrl] Waiting ${waitMs}ms for epbp=1 window (age=${ageMs}ms)`);
+      return setTimeout(() => {
+        pumpRemainderFromUrl(req, res, targetUrl, startByte, totalLength, redirectsLeft, retryCount);
+      }, waitMs);
+    }
+  }
+
   const client = parsed.protocol === 'https:' ? https : http;
   const headers = {
     'host': parsed.host,
@@ -778,7 +858,7 @@ function pumpRemainderFromUrl(req, res, targetUrl, startByte, totalLength, redir
     agent: parsed.protocol === 'https:' ? keepAliveHttpsAgent : keepAliveHttpAgent,
     headers
   }, (remainderRes) => {
-    console.log(`[pumpRemainderFromUrl] Upstream status: ${remainderRes.statusCode} for range ${headers['range']}`);
+    console.log(`[pumpRemainderFromUrl] Upstream status: ${remainderRes.statusCode} for range ${headers['range']} (retry=${retryCount})`);
     if (res.writableEnded) {
       remainderRes.destroy();
       return;
@@ -786,7 +866,14 @@ function pumpRemainderFromUrl(req, res, targetUrl, startByte, totalLength, redir
     if ([301, 302, 303, 307, 308].includes(remainderRes.statusCode) && remainderRes.headers.location && redirectsLeft > 0) {
       remainderRes.resume();
       const nextUrl = new URL(remainderRes.headers.location, targetUrl).toString();
-      return pumpRemainderFromUrl(req, res, nextUrl, startByte, totalLength, redirectsLeft - 1);
+      return pumpRemainderFromUrl(req, res, nextUrl, startByte, totalLength, redirectsLeft - 1, retryCount);
+    }
+    if (remainderRes.statusCode === 403 && retryCount < 4) {
+      console.log(`[pumpRemainderFromUrl] 403 on range ${startByte}-, retrying in 1000ms (attempt ${retryCount + 1}/4)`);
+      remainderRes.resume();
+      return setTimeout(() => {
+        pumpRemainderFromUrl(req, res, targetUrl, startByte, totalLength, redirectsLeft, retryCount + 1);
+      }, 1000);
     }
     if (remainderRes.statusCode >= 400) {
       console.log(`[pumpRemainderFromUrl] Upstream error: ${remainderRes.statusCode}`);
@@ -952,6 +1039,11 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, options 
             return handleAudioProxy(req, res, fullDetails.url, redirectsLeft - 1, options);
           }
         } catch (_) {}
+      }
+      if (proxyRes.statusCode === 403 && cParam === 'WEB_EMBEDDED_PLAYER' && redirectsLeft > 0) {
+        return setTimeout(() => {
+          handleAudioProxy(req, res, targetUrl, redirectsLeft - 1, options);
+        }, 1000);
       }
 
       for (const [k, v] of streamCache.entries()) {
@@ -2234,6 +2326,11 @@ const server = http.createServer(async (req, res) => {
                       expireAt: Date.now() + 18000000
                     });
                     saveStreamCacheToDisk();
+                    if (curIdx === 0 && inflightFullResolutions.size < 2) {
+                      setImmediate(() => {
+                        resolveFullStreamViaYtDlp(ytId).catch(() => {});
+                      });
+                    }
                   }
                 } catch (_) {}
               }
