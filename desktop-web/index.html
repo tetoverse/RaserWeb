@@ -100,38 +100,6 @@
       </div>
     </div>
 
-    <div class="platform-switch-container">
-      <div class="platform-pill-switch">
-        <button class="platform-btn" data-platform="youtube" id="platform-yt" title="YouTube">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M21.58 7.19c-.23-.86-.91-1.54-1.77-1.77C18.25 5 12 5 12 5s-6.25 0-7.81.42c-.86.23-1.54.91-1.77 1.77C2 8.75 2 12 2 12s0 3.25.42 4.81c.23.86.91 1.54 1.77 1.77C5.75 19 12 19 12 19s6.25 0 7.81-.42c.86-.23 1.54-.91 1.77-1.77C22 15.25 22 12 22 12s0-3.25-.42-4.81zM10 15V9l5.2 3L10 15z"/>
-          </svg>
-          <span>YouTube</span>
-        </button>
-        <button class="platform-btn" data-platform="ytmusic" id="platform-ytm" title="YouTube Music">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-2-12.5v9l6-4.5-6-4.5z"/>
-          </svg>
-          <span>YouTube Music</span>
-        </button>
-        <button class="platform-btn" data-platform="soundcloud" id="platform-sc" title="SoundCloud">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M11.5 14.5c0 .28-.22.5-.5.5s-.5-.22-.5-.5v-4c0-.28.22-.5.5-.5s.5.22.5.5v4zm-2 0c0 .28-.22.5-.5.5s-.5-.22-.5-.5v-3c0-.28.22-.5.5-.5s.5.22.5.5v3zm-2 0c0 .28-.22.5-.5.5s-.5-.22-.5-.5v-2c0-.28.22-.5.5-.5s.5.22.5.5v2zm-2 0c0 .28-.22.5-.5.5s-.5-.22-.5-.5v-1c0-.28.22-.5.5-.5s.5.22.5.5v1zm14.5-.5c0 1.93-1.57 3.5-3.5 3.5H13V9.1c.7-.6 1.6-1.1 2.6-1.1 2.2 0 4.1 1.6 4.4 3.8.3-.2.7-.3 1-.3 1.4 0 2.5 1.1 2.5 2.5z"/>
-          </svg>
-          <span>SoundCloud</span>
-        </button>
-      </div>
-      <script>
-        (function() {
-          try {
-            var p = localStorage.getItem('raser_platform') || localStorage.getItem('riff_platform') || 'ytmusic';
-            var el = document.getElementById(p === 'youtube' ? 'platform-yt' : (p === 'soundcloud' ? 'platform-sc' : 'platform-ytm'));
-            if (el) el.classList.add('active');
-          } catch(e) {}
-        })();
-      </script>
-    </div>
-
     <div class="user-account-container" id="user-account-container">
       <button class="btn-account-pill" id="btn-account-pill" type="button" title="Raser Account">
         <span class="account-avatar-circle" id="account-avatar-circle">
@@ -199,15 +167,11 @@
               <line x1="17" y1="16" x2="23" y2="16"></line>
             </svg>
           </button>
-          <button class="rail-icon-btn" id="btn-rail-new-playlist" title="Create playlist" aria-label="Create playlist">
+          <button class="rail-icon-btn" id="btn-rail-new-playlist" aria-label="Create playlist">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
               <line x1="12" y1="5" x2="12" y2="19"></line>
               <line x1="5" y1="12" x2="19" y2="12"></line>
             </svg>
-            <div class="rail-playlist-tooltip">
-              <span class="rail-playlist-tooltip-name" data-i18n>Create playlist</span>
-              <span class="rail-playlist-tooltip-meta" data-i18n>Add new collection</span>
-            </div>
           </button>
         </div>
 
@@ -234,7 +198,7 @@
             <button class="btn-icon-pill" id="btn-save-preset-dialog" title="Save preset" aria-label="Save preset" style="display: none;">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
             </button>
-            <button class="btn-icon-pill" id="btn-new-playlist" title="Create playlist" aria-label="Create playlist">
+            <button class="btn-icon-pill" id="btn-new-playlist" aria-label="Create playlist">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
             </button>
             <button class="btn-icon-pill" id="btn-close-rail-drawer" title="Close drawer" aria-label="Close drawer">
@@ -663,6 +627,16 @@
             </div>
 
             <div class="setting-item">
+              <div class="setting-item-top" style="align-items: center;">
+                <div style="display: flex; flex-direction: column; gap: 2px;">
+                  <span class="setting-name" data-i18n>Hide "Trending now"</span>
+                  <span style="font-size: calc(12px * var(--font-scale, 1)); color: var(--md-sys-color-outline);" data-i18n>Hide the trending now section on the home page</span>
+                </div>
+                <button class="effect-switch-btn" id="btn-hide-trending" data-adv="hide_trending"><span class="thumb"></span></button>
+              </div>
+            </div>
+
+            <div class="setting-item">
               <div class="setting-item-top">
                 <span class="setting-name">UI scale</span>
                 <span class="setting-value" id="settings-val-scale">100%</span>
@@ -740,11 +714,14 @@
 
             <div class="setting-item" id="setting-engine-api-row">
               <div class="setting-item-top">
-                <span class="setting-name">Search engine</span>
+                <div style="display: flex; flex-direction: column; gap: 2px;">
+                  <span class="setting-name">Music Provider</span>
+                  <span style="font-size: calc(12px * var(--font-scale, 1)); color: var(--md-sys-color-outline);">Default music search and streaming provider (YouTube Music default)</span>
+                </div>
               </div>
               <select class="pill-select" id="select-engine-api" style="display:none">
-                <option value="youtube">YouTube</option>
                 <option value="ytmusic" selected>YouTube Music</option>
+                <option value="youtube">YouTube</option>
                 <option value="soundcloud">SoundCloud</option>
               </select>
               <div class="m3-dropdown" id="engine-api-dropdown">
@@ -753,30 +730,10 @@
                   <svg class="m3-dropdown-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
                 </button>
                 <div class="m3-dropdown-menu" id="engine-api-menu">
-                  <button class="m3-dropdown-option" data-value="youtube" type="button">YouTube</button>
                   <button class="m3-dropdown-option selected" data-value="ytmusic" type="button">YouTube Music</button>
+                  <button class="m3-dropdown-option" data-value="youtube" type="button">YouTube</button>
                   <button class="m3-dropdown-option" data-value="soundcloud" type="button">SoundCloud</button>
                 </div>
-              </div>
-            </div>
-
-            <div class="setting-item">
-              <div class="setting-item-top" style="align-items: center;">
-                <div style="display: flex; flex-direction: column; gap: 2px;">
-                  <span class="setting-name">Compact engine buttons</span>
-                  <span style="font-size: calc(12px * var(--font-scale, 1)); color: var(--md-sys-color-outline);">Show only icons for YouTube, YouTube Music, and SoundCloud in the top bar</span>
-                </div>
-                <button class="effect-switch-btn" id="btn-compact-engine-btns"><span class="thumb"></span></button>
-              </div>
-            </div>
-
-            <div class="setting-item">
-              <div class="setting-item-top" style="align-items: center;">
-                <div style="display: flex; flex-direction: column; gap: 2px;">
-                  <span class="setting-name">Hide engine buttons</span>
-                  <span style="font-size: calc(12px * var(--font-scale, 1)); color: var(--md-sys-color-outline);">Hide search engine buttons from the top bar</span>
-                </div>
-                <button class="effect-switch-btn" id="btn-hide-engine-btns"><span class="thumb"></span></button>
               </div>
             </div>
 
@@ -1476,54 +1433,6 @@
                 </div>
               </div>
             </div>
-
-            <div class="setting-item" id="setting-word-source-row">
-              <div class="setting-item-top">
-                <div style="display: flex; flex-direction: column; gap: 2px;">
-                  <span class="setting-name">Word-by-word source</span>
-                  <span style="font-size: calc(12px * var(--font-scale, 1)); color: var(--md-sys-color-outline);">Source for karaoke word timings</span>
-                </div>
-              </div>
-              <div class="m3-dropdown" id="word-source-dropdown">
-                <button class="m3-dropdown-trigger" id="word-source-trigger" type="button">
-                  <span id="word-source-label">Auto</span>
-                  <svg class="m3-dropdown-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
-                </button>
-                <div class="m3-dropdown-menu" id="word-source-menu">
-                  <button class="m3-dropdown-option selected" data-value="auto" type="button">Auto</button>
-                  <button class="m3-dropdown-option" data-value="netease" type="button">NetEase</button>
-                  <button class="m3-dropdown-option" data-value="estimate" type="button">Estimate only (current)</button>
-                </div>
-              </div>
-            </div>
-
-            <div class="setting-item" id="setting-lyrics-wordstyle-row">
-              <div class="setting-item-top">
-                <div style="display: flex; flex-direction: column; gap: 2px;">
-                  <span class="setting-name">Word mode style</span>
-                  <span style="font-size: calc(12px * var(--font-scale, 1)); color: var(--md-sys-color-outline);">How the active line is highlighted in Word mode</span>
-                </div>
-              </div>
-              <div class="m3-dropdown" id="lyrics-wordstyle-dropdown">
-                <button class="m3-dropdown-trigger" id="lyrics-wordstyle-trigger" type="button">
-                  <span id="lyrics-wordstyle-label">Gradient</span>
-                  <svg class="m3-dropdown-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
-                </button>
-                <div class="m3-dropdown-menu" id="lyrics-wordstyle-menu">
-                  <button class="m3-dropdown-option selected" data-value="gradient" type="button">Gradient</button>
-                  <button class="m3-dropdown-option" data-value="words" type="button">Words</button>
-                </div>
-              </div>
-            </div>
-
-            <div class="setting-item" id="setting-lyrics-tightness-row">
-              <div class="setting-item-top">
-                <span class="setting-name">Gradient tightness</span>
-                <span class="setting-value" id="val-lyrics-tightness">2%</span>
-              </div>
-              <input type="range" class="pill-range" id="slider-lyrics-tightness" min="2" max="24" step="2" value="2">
-              <div class="setting-hints"><span>2% (Sharp)</span><span>Default</span><span>24% (Soft)</span></div>
-            </div>
                 </div>
               </div>
 
@@ -1933,16 +1842,6 @@
                   <div class="setting-item">
                     <div class="setting-item-top" style="align-items: center;">
                       <div style="display: flex; flex-direction: column; gap: 2px;">
-                        <span class="setting-name">Karaoke word highlighting</span>
-                        <span style="font-size: calc(12px * var(--font-scale, 1)); color: var(--md-sys-color-outline);">Highlight individual words in synchronized lyrics</span>
-                      </div>
-                      <button class="effect-switch-btn active" data-adv="karaoke_words"><span class="thumb"></span></button>
-                    </div>
-                  </div>
-
-                  <div class="setting-item">
-                    <div class="setting-item-top" style="align-items: center;">
-                      <div style="display: flex; flex-direction: column; gap: 2px;">
                         <span class="setting-name">Auto-scroll synced lyrics</span>
                         <span style="font-size: calc(12px * var(--font-scale, 1)); color: var(--md-sys-color-outline);">Smoothly follow the active lyric line during playback</span>
                       </div>
@@ -2193,9 +2092,6 @@
       <div class="right-panel-banner" id="right-panel-banner"><div class="banner-image"></div></div>
       <div class="right-panel-header">
         <div class="right-panel-header-actions">
-          <button class="lyrics-mode-btn" id="btn-lyrics-mode" title="Toggle line mode">
-            <span>Word</span>
-          </button>
           <button class="btn-icon-pill" id="btn-close-right-panel" title="Close panel">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
           </button>
@@ -3717,6 +3613,7 @@
 
   <script src="../../assets/hls.min.js"></script>
   <script src="audio.js?v=20261109_m3live2"></script>
+  <script src="tauri-bridge.js"></script>
   <script src="shapes.js"></script>
   <script src="lyrics-rtl.js"></script>
   <script src="track-sort.js"></script>

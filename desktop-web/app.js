@@ -932,7 +932,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     _isNaturalEnding: false,
     _skipRecordedFor: null,
     isRightPanelOpen: true,
-    lyricsMode: 'word',
+    lyricsMode: 'line',
     uiScale: savedScale,
     activePresetId: soundPersistenceEnabled ? (localStorage.getItem('riff_active_preset') || 'p_default') : 'p_default',
     themeMode: localStorage.getItem('riff_theme_mode') || 'dark',
@@ -5392,7 +5392,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
 
         const mainDiv = document.getElementById(`lyric-line-${index}`);
-        if (mainDiv && !isGradientMode() && getAdv('karaoke_words', true) && state.lyricsMode === 'word') {
+        if (mainDiv && !isGradientMode() && getAdv('karaoke_words', false) && state.lyricsMode === 'word') {
           const trEl = mainDiv.querySelector('.lyric-translation');
           mainDiv.innerHTML = '';
           mainDiv.appendChild(buildWordNodes());
@@ -5568,7 +5568,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   function getLyricsWordStyle() { return localStorage.getItem('riff_lyrics_word_style') === 'words' ? 'words' : 'gradient'; }
-  function isGradientMode() { return state.lyricsMode === 'word' && getAdv('karaoke_words', true) && getLyricsWordStyle() === 'gradient'; }
+  function isGradientMode() { return state.lyricsMode === 'word' && getAdv('karaoke_words', false) && getLyricsWordStyle() === 'gradient'; }
 
   function renderLyricsView() {
     if (!el.lyricsContainer) return;
@@ -5803,7 +5803,7 @@ document.addEventListener('DOMContentLoaded', async () => {
               wSpan.className = 'lyric-word' + isP;
             }
           });
-        } else if (getAdv('karaoke_words', true) && state.lyricsMode === 'word') {
+        } else if (getAdv('karaoke_words', false) && state.lyricsMode === 'word') {
           const currentLineTime = getLineStartTime(activeIndex);
           const nextLineTime = getLineEndTime(activeIndex);
           const lineDur = Math.max(0.5, nextLineTime - currentLineTime);
@@ -6502,7 +6502,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (isGradientMode()) {
           updateActiveGradient();
           startGradientLoop();
-        } else if (getAdv('karaoke_words', true) && state.lyricsMode === 'word') {
+        } else if (getAdv('karaoke_words', false) && state.lyricsMode === 'word') {
           const line = state.syncedLyrics[idx];
           if (line && line.words && Array.isArray(line.words) && line.words.length > 0) {
             const wordSpans = lineEl.querySelectorAll('.lyric-word');
@@ -6546,7 +6546,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (lineEl.classList.contains('gradient-line')) {
           lineEl.querySelectorAll('.lyric-fill').forEach(f => f.style.setProperty('--k', '0'));
         }
-        if (!isGradientMode() && getAdv('karaoke_words', true) && state.lyricsMode === 'word') {
+        if (!isGradientMode() && getAdv('karaoke_words', false) && state.lyricsMode === 'word') {
           lineEl.querySelectorAll('.lyric-word').forEach(wSpan => {
             const isP = wSpan.classList.contains('lyric-paren') ? ' lyric-paren' : '';
             wSpan.className = (idx < activeIndex ? 'lyric-word past-word' : 'lyric-word') + isP;
@@ -6566,7 +6566,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   function updateLyricsModeButton() {
     if (!el.btnLyricsMode) return;
-    const isWordEnabled = getAdv('karaoke_words', true);
+    const isWordEnabled = getAdv('karaoke_words', false);
     if (!isWordEnabled && state.lyricsMode === 'word') {
       state.lyricsMode = 'line';
     }
@@ -6577,7 +6577,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (el.btnLyricsMode) {
     updateLyricsModeButton();
     el.btnLyricsMode.addEventListener('click', () => {
-      if (!getAdv('karaoke_words', true)) {
+      if (!getAdv('karaoke_words', false)) {
         state.lyricsMode = 'line';
         updateLyricsModeButton();
         return;
