@@ -14047,6 +14047,57 @@ function renderClickableArtists(container, rawArtist, hintTrack = null) {
     return newPl;
   }
 
+  let _playlistPrewarmObserver = null;
+  function setupPlaylistVisibilityPrewarm(tracks, container) {
+    if (_playlistPrewarmObserver) {
+      _playlistPrewarmObserver.disconnect();
+      _playlistPrewarmObserver = null;
+    }
+    if (!container || !Array.isArray(tracks) || tracks.length === 0 || typeof IntersectionObserver === 'undefined') return;
+    const timers = new Map();
+    let pendingBatch = [];
+    let flushTimer = null;
+    const flushBatch = () => {
+      flushTimer = null;
+      if (pendingBatch.length > 0) {
+        const batch = pendingBatch.splice(0, pendingBatch.length);
+        prewarmPlaylistTrackIds(batch);
+      }
+    };
+    _playlistPrewarmObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        const row = entry.target;
+        const idx = Number(row.dataset.prewarmIdx);
+        const track = tracks[idx];
+        if (!track || track._idPrewarmed) {
+          _playlistPrewarmObserver.unobserve(row);
+          continue;
+        }
+        if (entry.isIntersecting) {
+          if (!timers.has(row)) {
+            timers.set(row, setTimeout(() => {
+              timers.delete(row);
+              _playlistPrewarmObserver?.unobserve(row);
+              if (!track._idPrewarmed) {
+                pendingBatch.push(track);
+                if (!flushTimer) flushTimer = setTimeout(flushBatch, 50);
+              }
+            }, 150));
+          }
+        } else if (timers.has(row)) {
+          clearTimeout(timers.get(row));
+          timers.delete(row);
+        }
+      }
+    }, { threshold: 0.1 });
+    Array.from(container.children).forEach((row, idx) => {
+      if (tracks[idx] && !tracks[idx]._idPrewarmed) {
+        row.dataset.prewarmIdx = String(idx);
+        _playlistPrewarmObserver.observe(row);
+      }
+    });
+  }
+
   function prewarmPlaylistTrackIds(tracks) {
     if (!Array.isArray(tracks) || tracks.length === 0) return;
     const candidates = tracks.filter(t => t && !t._idPrewarmed && t.platform !== 'local' && t.platform !== 'soundcloud').slice(0, 20);
@@ -14185,7 +14236,10 @@ function renderClickableArtists(container, rawArtist, hintTrack = null) {
     }
     if (el.mainContent) el.mainContent.scrollTop = 0;
     switchView('playlist-detail');
-    if (el.playlistTracksList) renderTracks(el.playlistTracksList, filtered, 'playlist');
+    if (el.playlistTracksList) {
+      renderTracks(el.playlistTracksList, filtered, 'playlist');
+      setupPlaylistVisibilityPrewarm(filtered, el.playlistTracksList);
+    }
     renderPlaylistsList();
   }
 
