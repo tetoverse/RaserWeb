@@ -3605,7 +3605,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             prefetchNextQueueTrack();
           }
           if (state.isRightPanelOpen || state.isTvKaraokeOpen) {
-            updateSyncedLyricsHighlight(cur);
+            const lyricSlice = Math.floor(cur * 12);
+            if (state._lastRenderLyricSlice !== lyricSlice) {
+              state._lastRenderLyricSlice = lyricSlice;
+              updateSyncedLyricsHighlight(cur);
+            }
           }
         }
 
@@ -9115,8 +9119,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         preloadedTrack10sFired = true;
         preloadNextTrackStream();
       }
-      try { onLastFmTimeUpdate(); } catch (_) {}
-      updateMediaPositionState();
+      const cur = (el.nativeAudio && Number.isFinite(el.nativeAudio.currentTime)) ? el.nativeAudio.currentTime : 0;
+      const roundedSec = Math.floor(cur);
+      const secChanged = lastTimeupdateSec !== roundedSec;
+      if (secChanged) {
+        try { onLastFmTimeUpdate(); } catch (_) {}
+        updateMediaPositionState();
+      }
       try {
         const activeTrim = state.currentTrack ? getTrackTrim(state.currentTrack) : null;
         if (activeTrim && Number.isFinite(activeTrim.end) && activeTrim.end > (activeTrim.start || 0) + 1.5 && el.nativeAudio && !isDraggingScrubber) {
@@ -9135,7 +9144,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
       } catch (_) {}
 
-      const cur = (el.nativeAudio && Number.isFinite(el.nativeAudio.currentTime)) ? el.nativeAudio.currentTime : 0;
       const dur = getReliableTrackDuration();
 
       const X = parseInt(localStorage.getItem('riff_crossfade') || '0', 10);
@@ -9162,8 +9170,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       if (isPauseFading || isDraggingScrubber) return;
-      const roundedSec = Math.floor(cur);
-      if (lastTimeupdateSec === roundedSec) return;
+      if (!secChanged) return;
       lastTimeupdateSec = roundedSec;
       if (state.isRightPanelOpen || state.isTvKaraokeOpen) {
         updateSyncedLyricsHighlight(cur);
