@@ -3884,13 +3884,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
       }
       if (typeof m3cStep === 'function' && m3c && !m3c.raf) {
-        m3cStep(timestamp, true);
+        m3cStep(timestamp || performance.now(), true);
       }
       if (state.isPlaying && isGradientMode() && isLyricsViewVisible()) {
         updateActiveGradient();
       }
     }
-    renderLoop(0);
+    renderLoop(performance.now());
   }
 
   function handleVisibilityChange(visible) {
@@ -9052,7 +9052,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       updateMediaPositionState();
       if (el.trackLoadingOverlay) el.trackLoadingOverlay.classList.add('hidden');
       hasDrawnPausedFrame = false;
-      if (!animationFrameId) startVisualizers();
+      if (!animationFrameId && !renderIdleTimeoutId) startVisualizers();
       if (audioEngine) {
         if (audioEngine.resumeAudioContext) audioEngine.resumeAudioContext();
         audioEngine._applyMasterVolume();
@@ -9179,7 +9179,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (el.tvkTimeCurrent) el.tvkTimeCurrent.textContent = formatDuration(cur);
       if (!state.isPlaying) {
         hasDrawnPausedFrame = false;
-        if (!animationFrameId && typeof startVisualizers === 'function') {
+        if (!animationFrameId && !renderIdleTimeoutId && typeof startVisualizers === 'function') {
           startVisualizers();
         }
       }
@@ -9327,12 +9327,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     el.scrubberTrack.addEventListener('mouseenter', (e) => {
       isHoveringScrubber = true;
       hasDrawnPausedFrame = false;
-      if (!animationFrameId) startVisualizers();
+      if (!animationFrameId && !renderIdleTimeoutId) startVisualizers();
       updateScrubberHoverTooltip(e);
     });
     el.scrubberTrack.addEventListener('mousemove', (e) => {
       if (!isHoveringScrubber) isHoveringScrubber = true;
-      if (!animationFrameId) startVisualizers();
+      if (!animationFrameId && !renderIdleTimeoutId) startVisualizers();
       updateScrubberHoverTooltip(e);
     });
     el.scrubberTrack.addEventListener('mouseleave', () => {
@@ -9344,7 +9344,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     el.scrubberTrack.addEventListener('mousedown', (e) => {
       isDraggingScrubber = true;
       hasDrawnPausedFrame = false;
-      if (!animationFrameId) startVisualizers();
+      if (!animationFrameId && !renderIdleTimeoutId) startVisualizers();
       el.scrubberTrack.classList.add('dragging');
       updateScrubberPositionFromEvent(e);
     });
@@ -9393,7 +9393,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       isDraggingTvkScrubber = true;
       isDraggingScrubber = true;
       hasDrawnPausedFrame = false;
-      if (!animationFrameId) startVisualizers();
+      if (!animationFrameId && !renderIdleTimeoutId) startVisualizers();
       updateTvkScrubberPositionFromEvent(e);
       try { tvkProgRowEl.setPointerCapture(e.pointerId); } catch (_) {}
     });
@@ -17902,9 +17902,10 @@ function bindCoverHoldZoom(wrapEl) {
   function m3cShapeRadii(now) {
     const S = window.RiffShapes;
     if (!S || !S.ready()) return null;
-    if (!m3c.start) { m3c.start = now; m3c.from = 0; m3c.to = 0; }
-    if (now - m3c.start >= S.HOLD_MS) { m3c.from = m3c.to; m3c.to = S.next(m3c.from); m3c.start = now; }
-    const t = Math.min(1, (now - m3c.start) / S.MORPH_MS);
+    const tNow = now > 0 ? now : performance.now();
+    if (!m3c.start) { m3c.start = tNow; m3c.from = 0; m3c.to = 0; }
+    if (tNow - m3c.start >= S.HOLD_MS) { m3c.from = m3c.to; m3c.to = S.next(m3c.from); m3c.start = tNow; }
+    const t = Math.max(0, Math.min(1, (tNow - m3c.start) / S.MORPH_MS));
     return { a: S.profile(m3c.from), b: S.profile(m3c.to), e: S.ease(t) };
   }
   function m3cDraw(now) {
@@ -18298,7 +18299,7 @@ function bindCoverHoldZoom(wrapEl) {
       localStorage.setItem('riff_progress_knob', next ? 'true' : 'false');
       updateProgressKnobUI();
       hasDrawnPausedFrame = false;
-      if (!animationFrameId && typeof startVisualizers === 'function') startVisualizers();
+      if (!animationFrameId && !renderIdleTimeoutId && typeof startVisualizers === 'function') startVisualizers();
     });
   }
 
@@ -18309,7 +18310,7 @@ function bindCoverHoldZoom(wrapEl) {
       localStorage.setItem('riff_progress_bg', next ? 'true' : 'false');
       updateProgressBgUI();
       hasDrawnPausedFrame = false;
-      if (!animationFrameId && typeof startVisualizers === 'function') startVisualizers();
+      if (!animationFrameId && !renderIdleTimeoutId && typeof startVisualizers === 'function') startVisualizers();
     });
   }
 
