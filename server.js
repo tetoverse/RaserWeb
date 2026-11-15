@@ -256,34 +256,6 @@ function fetchYouTubeInnertubeStream(videoId, preferredQuality = '') {
       videoId: cleanId
     });
 
-let _cachedYtCookieHeader = null;
-function getYouTubeCookieHeader() {
-  if (_cachedYtCookieHeader !== null) return _cachedYtCookieHeader;
-  try {
-    const cookiesPath = path.join(__dirname, 'cookies.txt');
-    if (!fs.existsSync(cookiesPath)) {
-      _cachedYtCookieHeader = '';
-      return '';
-    }
-    const lines = fs.readFileSync(cookiesPath, 'utf8').split(/\r?\n/);
-    const pairs = [];
-    for (const line of lines) {
-      if (!line || line.startsWith('#')) continue;
-      const parts = line.split('\t');
-      if (parts.length < 7) continue;
-      const domain = parts[0];
-      if (domain.includes('youtube.com') || domain.includes('google.com')) {
-        pairs.push(`${parts[5]}=${parts[6]}`);
-      }
-    }
-    _cachedYtCookieHeader = pairs.join('; ');
-  } catch (_) {
-    _cachedYtCookieHeader = '';
-  }
-  return _cachedYtCookieHeader;
-}
-
-    const ytCookieHeader = getYouTubeCookieHeader();
     const req = https.request('https://www.youtube.com/youtubei/v1/player', {
       method: 'POST',
       agent: keepAliveHttpsAgent,
@@ -293,8 +265,7 @@ function getYouTubeCookieHeader() {
         'Content-Length': Buffer.byteLength(payload),
         'User-Agent': 'com.google.ios.youtube/20.10.4',
         'X-YouTube-Client-Name': '5',
-        'X-YouTube-Client-Version': '20.10.4',
-        ...(ytCookieHeader ? { Cookie: ytCookieHeader } : {})
+        'X-YouTube-Client-Version': '20.10.4'
       },
       timeout: 8000
     }, (res) => {
