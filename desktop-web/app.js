@@ -5444,7 +5444,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 4000);
         try {
-          const res = await fetch(`${getApiBaseUrl()}/api/lyrics?title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist)}&online=${onlineParam}&source=${encodeURIComponent(source)}${durationParam}`, { signal: controller.signal });
+          const res = await fetch(`${getApiBaseUrl()}/api/lyrics?title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist)}&online=${onlineParam}&source=${encodeURIComponent(source)}${durationParam}${state.currentTrack && state.currentTrack.id ? `&id=${encodeURIComponent(state.currentTrack.id)}` : ''}`, { signal: controller.signal });
           data = await res.json();
           if (data && data.success && data.lyrics) {
             lyricsSessionCache.set(lyricsCacheKey, data);
@@ -5485,6 +5485,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       state.isCustomLyrics = !!data.isCustom;
+
+      if (data && typeof data.introOffset === 'number' && data.introOffset !== 0) {
+        const currentSavedOffset = typeof getTrackLyricsOffset === 'function' ? getTrackLyricsOffset(state.currentTrack) : 0;
+        if (currentSavedOffset === 0) {
+          state.lyricsManualOffset = data.introOffset;
+        }
+      }
 
       const raw = data.lyrics;
       const gapPattern1 = /^[\s♪♫\-–—.]*$/;
