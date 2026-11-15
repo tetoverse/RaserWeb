@@ -34,6 +34,7 @@ def get_ydl(use_tvhtml5=True):
         "noplaylist": True,
         "skip_download": True,
         "format": "140/ba/b",
+        "source_address": "0.0.0.0",
         "js_runtimes": {"node": {}},
     }
     if use_tvhtml5:
