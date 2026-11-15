@@ -3212,6 +3212,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     let bufferLength = analyserNode ? analyserNode.frequencyBinCount : 0;
     let freqData = bufferLength > 0 ? new Uint8Array(bufferLength) : null;
     let lastRenderTime = 0;
+    const scrubberCanvas = document.getElementById('squiggly-canvas');
+    const sCtx = scrubberCanvas ? scrubberCanvas.getContext('2d') : null;
+    const ccPlayhead = document.getElementById('cc-playhead');
 
     function renderLoop(timestamp) {
       if (document.hidden || !state.isWindowVisible) {
@@ -3254,7 +3257,6 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
         }
       } catch (_) {}
-      const ccPlayhead = document.getElementById('cc-playhead');
       if (ccPlayhead && typeof trackToDownload !== 'undefined' && trackToDownload && isSameTrack(state.currentTrack, trackToDownload) && typeof trimDraft !== 'undefined' && trimDraft && trimDraft.dur > 0) {
         const cur = el.nativeAudio ? (el.nativeAudio.currentTime || 0) : 0;
         const pct = Math.max(0, Math.min(100, (cur / trimDraft.dur) * 100));
@@ -3264,8 +3266,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (document.body.classList.contains('perf') && timestamp - lastFrameTime < 33) return;
       lastFrameTime = timestamp;
 
-      const isVisualizerVisible = miniCanvas && miniCanvas.offsetParent !== null && !document.hidden;
-      const isTvkVisualizerVisible = state.isTvKaraokeOpen && tvkCanvas && tvkCanvas.offsetParent !== null && !document.hidden;
+      const isVisualizerVisible = miniCanvas && miniCanvas.style.display !== 'none' && (!miniCanvas.parentElement || miniCanvas.parentElement.style.display !== 'none') && !document.hidden;
+      const isTvkVisualizerVisible = state.isTvKaraokeOpen && tvkCanvas && !document.hidden;
       const isBehindVizVisible = (document.body.classList.contains('bar-viz-behind') || isVizConnectedMode()) && localStorage.getItem('riff_bar_wave') !== '0' && !document.body.classList.contains('mini') && !document.hidden;
       const needBassPulse = !!(state.vfx && state.vfx.bassPulse);
       const activeGap = document.querySelector('.lyric-line.lyric-gap.active');
@@ -3558,10 +3560,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         } catch (_) {}
       }
 
-      let scrubberCanvas = document.getElementById('squiggly-canvas');
-      if (scrubberCanvas && el.scrubberTrack) {
-        const sCtx = scrubberCanvas.getContext('2d');
-        const sw = (el.scrubberTrack && el.scrubberTrack.clientWidth) ? el.scrubberTrack.clientWidth : (cachedTrackWidth || 0);
+      if (scrubberCanvas && sCtx && el.scrubberTrack) {
+        const sw = cachedTrackWidth || (el.scrubberTrack && el.scrubberTrack.clientWidth) || 300;
         const sh = cachedTrackHeight || 40;
         if (!state.isTvKaraokeOpen) sCtx.clearRect(0, 0, sw, sh);
 
