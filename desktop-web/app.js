@@ -17614,7 +17614,26 @@ function bindCoverHoldZoom(wrapEl) {
   }
   enhanceSliders();
   let sliderRaf = 0;
-  new MutationObserver(() => { if (sliderRaf) return; sliderRaf = requestAnimationFrame(() => { sliderRaf = 0; enhanceSliders(); }); }).observe(document.body, { childList: true, subtree: true });
+  const pendingSliderRoots = new Set();
+  new MutationObserver((mutations) => {
+    for (let i = 0; i < mutations.length; i++) {
+      const nodes = mutations[i].addedNodes;
+      for (let j = 0; j < nodes.length; j++) {
+        const n = nodes[j];
+        if (n.nodeType === 1 && !n.classList.contains('sl')) {
+          if (n.tagName === 'INPUT' || (n.querySelector && n.querySelector('input[type="range"]'))) {
+            pendingSliderRoots.add(n.parentElement || document);
+          }
+        }
+      }
+    }
+    if (pendingSliderRoots.size === 0 || sliderRaf) return;
+    sliderRaf = requestAnimationFrame(() => {
+      sliderRaf = 0;
+      pendingSliderRoots.forEach((r) => enhanceSliders(r));
+      pendingSliderRoots.clear();
+    });
+  }).observe(document.body, { childList: true, subtree: true });
 
   (function initHueSegments() {
     const input = document.getElementById('slider-theme-hue');
@@ -19022,14 +19041,31 @@ function bindCoverHoldZoom(wrapEl) {
     }
   });
 
-  function decorateSwitches() {
-    document.querySelectorAll('.effect-switch-btn .thumb:not(.has-icon)').forEach((t) => {
+  function decorateSwitches(root) {
+    (root || document).querySelectorAll('.effect-switch-btn .thumb:not(.has-icon)').forEach((t) => {
       t.classList.add('has-icon');
       t.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="sw-icon"/></svg>';
     });
   }
   let swRaf = 0;
-  new MutationObserver(() => { if (swRaf) return; swRaf = requestAnimationFrame(() => { swRaf = 0; decorateSwitches(); }); }).observe(document.body, { childList: true, subtree: true });
+  const pendingSwitchRoots = new Set();
+  new MutationObserver((mutations) => {
+    for (let i = 0; i < mutations.length; i++) {
+      const nodes = mutations[i].addedNodes;
+      for (let j = 0; j < nodes.length; j++) {
+        const n = nodes[j];
+        if (n.nodeType === 1 && (n.classList.contains('effect-switch-btn') || (n.querySelector && n.querySelector('.effect-switch-btn')))) {
+          pendingSwitchRoots.add(n.parentElement || document);
+        }
+      }
+    }
+    if (pendingSwitchRoots.size === 0 || swRaf) return;
+    swRaf = requestAnimationFrame(() => {
+      swRaf = 0;
+      pendingSwitchRoots.forEach((r) => decorateSwitches(r));
+      pendingSwitchRoots.clear();
+    });
+  }).observe(document.body, { childList: true, subtree: true });
   decorateSwitches();
 
   const settingWinMediaKeys = document.getElementById('setting-win-media-keys');
