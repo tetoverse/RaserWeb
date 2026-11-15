@@ -10419,8 +10419,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
     container._m3LoaderState = stateObj;
 
+    let lastLoaderFrame = 0;
     function frame(now) {
-      if (!svg.isConnected || stateObj.stopped) return;
+      if (!svg.isConnected || stateObj.stopped || document.hidden || !state.isWindowVisible) return;
+      if (container.closest('.hidden') || container.closest('.view:not(.active)')) return;
+      if (now - lastLoaderFrame < 32) {
+        if (!stateObj.stopped) requestAnimationFrame(frame);
+        return;
+      }
+      lastLoaderFrame = now;
       let eMorph = 0;
 
       if (!stateObj.stopping) {
@@ -10471,18 +10478,25 @@ document.addEventListener('DOMContentLoaded', async () => {
     requestAnimationFrame(frame);
   }
 
+  let btnShapeSpinnerRaf = 0;
   function startButtonShapeSpinners() {
+    if (btnShapeSpinnerRaf) return;
     const S = window.RiffShapes;
     if (!S || !S.ready()) return;
     let fromIdx = 0;
     let toIdx = S.next(0);
     let stepStart = performance.now();
+    let lastTick = 0;
     const STEP_MS = 1000;
     const K = S.K;
 
     function tick(now) {
+      btnShapeSpinnerRaf = 0;
+      if (document.hidden || !state.isWindowVisible) return;
       const spinners = document.querySelectorAll('.m3-btn-shape-spinner:not(.hidden)');
-      if (spinners.length > 0) {
+      if (spinners.length === 0) return; // Stop rAF loop completely when no spinner is mounted
+      if (now - lastTick >= 32) {
+        lastTick = now;
         if (now - stepStart >= STEP_MS) {
           fromIdx = toIdx;
           toIdx = S.next(fromIdx);
@@ -10504,11 +10518,10 @@ document.addEventListener('DOMContentLoaded', async () => {
           if (p) p.setAttribute('d', d);
         });
       }
-      requestAnimationFrame(tick);
+      btnShapeSpinnerRaf = requestAnimationFrame(tick);
     }
-    requestAnimationFrame(tick);
+    btnShapeSpinnerRaf = requestAnimationFrame(tick);
   }
-  startButtonShapeSpinners();
 
   function stopM3SearchLoaderWithError(container, errMessage) {
     if (!container) return;
@@ -12567,21 +12580,25 @@ function renderClickableArtists(container, rawArtist, hintTrack = null) {
       container.innerHTML = `<div class="m3-loader-container" style="display:flex;justify-content:center;align-items:center;padding:48px 0;width:100%;"><svg class="g-spinner" viewBox="0 0 48 48"><circle cx="24" cy="24" r="20"/></svg></div>`;
       return;
     }
-    let fromIdx = 0, toIdx = S.next(0), start = performance.now();
+    let fromIdx = 0, toIdx = S.next(0), start = performance.now(), lastFrame = 0;
     const K = S.K;
     function frame(now) {
-      if (!svg.isConnected) return;
-      if (now - start >= 2000) { fromIdx = toIdx; toIdx = S.next(fromIdx); start = now; }
-      const e = S.ease(Math.min(1, (now - start) / 1200));
-      const a = S.profile(fromIdx), b = S.profile(toIdx);
-      const rot = ((now % 6000) / 6000) * Math.PI * 2;
-      let d = '';
-      for (let k = 0; k < K; k += 3) {
-        const th = -Math.PI + (Math.PI * 2 * k) / K + rot;
-        const r = a[k] + (b[k] - a[k]) * e;
-        d += `${k === 0 ? 'M' : 'L'}${(Math.cos(th) * r).toFixed(1)},${(Math.sin(th) * r).toFixed(1)}`;
+      if (!svg.isConnected || document.hidden || !state.isWindowVisible) return;
+      if (container.closest('.hidden') || container.closest('.view:not(.active)')) return;
+      if (now - lastFrame >= 32) {
+        lastFrame = now;
+        if (now - start >= 2000) { fromIdx = toIdx; toIdx = S.next(fromIdx); start = now; }
+        const e = S.ease(Math.min(1, (now - start) / 1200));
+        const a = S.profile(fromIdx), b = S.profile(toIdx);
+        const rot = ((now % 6000) / 6000) * Math.PI * 2;
+        let d = '';
+        for (let k = 0; k < K; k += 3) {
+          const th = -Math.PI + (Math.PI * 2 * k) / K + rot;
+          const r = a[k] + (b[k] - a[k]) * e;
+          d += `${k === 0 ? 'M' : 'L'}${(Math.cos(th) * r).toFixed(1)},${(Math.sin(th) * r).toFixed(1)}`;
+        }
+        path.setAttribute('d', d + 'Z');
       }
-      path.setAttribute('d', d + 'Z');
       requestAnimationFrame(frame);
     }
     requestAnimationFrame(frame);
@@ -20240,6 +20257,7 @@ function bindCoverHoldZoom(wrapEl) {
         manualUpdateCheck = true;
         btn.disabled = true;
         btn.innerHTML = '<svg class="m3-btn-shape-spinner" style="width:16px;height:16px;margin-right:6px;" viewBox="-180 -180 360 360"><path fill="currentColor"/></svg><span>Checking...</span>';
+        startButtonShapeSpinners();
 
         if (!api || !api.checkForUpdates) {
           checkDirectFromRenderer();
@@ -22509,6 +22527,7 @@ function bindCoverHoldZoom(wrapEl) {
       const orig = btnAdvYtLogin.innerHTML;
       btnAdvYtLogin.disabled = true;
       btnAdvYtLogin.innerHTML = '<svg class="m3-btn-shape-spinner" style="width:14px;height:14px;margin-right:6px;" viewBox="-180 -180 360 360"><path fill="currentColor"/></svg><span>Signing in...</span>';
+      startButtonShapeSpinners();
       try {
         const res = await window.electronAPI.googleLogin();
         googleConnected = !!(res && res.loggedIn);
@@ -24027,6 +24046,7 @@ function bindCoverHoldZoom(wrapEl) {
       const spinnerEl = el.downloadSpinner || document.getElementById('download-spinner');
       if (spinnerEl) {
         spinnerEl.innerHTML = '<div class="m3-spinner-container" style="width: 32px; height: 32px; padding: 4px; background: transparent; color: var(--md-sys-color-primary);"><svg class="m3-btn-shape-spinner" viewBox="-180 -180 360 360" style="width: 24px; height: 24px;"><path fill="currentColor"/></svg></div>';
+        startButtonShapeSpinners();
       }
 
       showToast(`Downloading: ${t.title || 'Track'} (.${selectedFormat})`, 'info');
