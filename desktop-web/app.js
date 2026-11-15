@@ -8953,7 +8953,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     el.nativeAudio.addEventListener('pause', () => {
       // If the audio element was paused by browser buffer starvation/waiting rather than intentional user pause:
-      if (!state._intentionalPause) {
+      if (!state._intentionalPause && !(window.electronAPI && window.electronAPI.isTauri)) {
         state._isWaitingForData = true;
         updatePlayPauseButton(true, true);
         watchPlaybackStall();
