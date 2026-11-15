@@ -1656,6 +1656,105 @@ function formatTrack(t) {
   };
 }
 
+
+const lyricsCache = new Map(); // cacheKey -> { data, expireAt }
+
+function cleanTrackTitle(title) {
+  if (!title || typeof title !== 'string') return '';
+  return title
+    .replace(/[\(\[\{].*?(?:official|video|music video|mv|lyric|lyrics|audio|remastered|hd|4k|feat|ft|visualizer).*?[\)\]\}]/gi, '')
+    .replace(/\s+(?:feat|ft)\.?\s+.*$/gi, '')
+    .trim();
+}
+
+async function fetchLyricsFromLrclib(title, artist, duration) {
+  const cleanTitle = cleanTrackTitle(title) || title;
+  const cacheKey = `${cleanTitle.toLowerCase()}:::${(artist || '').toLowerCase()}`;
+  const now = Date.now();
+  if (lyricsCache.has(cacheKey)) {
+    const entry = lyricsCache.get(cacheKey);
+    if (entry.expireAt > now) {
+      return entry.data;
+    }
+  }
+
+  const userAgent = 'RaserMusicApp/1.1 (https://github.com/tetoverse/Raser)';
+
+  // Helper fetch function
+  const fetchJson = (targetUrl) => {
+    return new Promise((resolve) => {
+      const parsed = new URL(targetUrl);
+      const req = https.request({
+        hostname: parsed.hostname,
+        path: parsed.pathname + parsed.search,
+        method: 'GET',
+        headers: { 'User-Agent': userAgent },
+        timeout: 4000
+      }, (res) => {
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          res.resume();
+          return resolve(null);
+        }
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(data));
+          } catch (_) {
+            resolve(null);
+          }
+        });
+      });
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => { req.destroy(); resolve(null); });
+      req.end();
+    });
+  };
+
+  // 1. Try exact match /api/get
+  let getParams = `track_name=${encodeURIComponent(cleanTitle)}&artist_name=${encodeURIComponent(artist || '')}`;
+  if (duration && !isNaN(Number(duration))) {
+    getParams += `&duration=${Math.round(Number(duration))}`;
+  }
+  let result = await fetchJson(`https://lrclib.net/api/get?${getParams}`);
+
+  // 2. If not found, try search
+  if (!result || (!result.syncedLyrics && !result.plainLyrics)) {
+    const q = `${cleanTitle} ${artist || ''}`.trim();
+    const searchRes = await fetchJson(`https://lrclib.net/api/search?q=${encodeURIComponent(q)}`);
+    if (Array.isArray(searchRes) && searchRes.length > 0) {
+      // Prioritize item with syncedLyrics
+      result = searchRes.find(it => it.syncedLyrics) || searchRes[0];
+    }
+  }
+
+  let finalLyrics = '';
+  let isSynced = false;
+  if (result) {
+    if (result.syncedLyrics) {
+      finalLyrics = result.syncedLyrics;
+      isSynced = true;
+    } else if (result.plainLyrics) {
+      finalLyrics = result.plainLyrics;
+      isSynced = false;
+    }
+  }
+
+  const responseData = {
+    success: !!finalLyrics,
+    lyrics: finalLyrics || '',
+    isSynced: isSynced,
+    trackName: result ? result.trackName : cleanTitle,
+    artistName: result ? result.artistName : artist
+  };
+
+  // Cache for 2 hours if found, 10 minutes if not found
+  const ttl = finalLyrics ? (2 * 60 * 60 * 1000) : (10 * 60 * 1000);
+  lyricsCache.set(cacheKey, { data: responseData, expireAt: now + ttl });
+  return responseData;
+}
+
 const server = http.createServer(async (req, res) => {
   const reqUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = reqUrl.pathname;
@@ -2181,9 +2280,35 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify({ success: true }));
     return;
   }
-  if (pathname === '/api/track-cover' || pathname === '/api/lyrics' || pathname === '/api/lyrics-words') {
+  if (pathname === '/api/track-cover') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ success: false, lyrics: '' }));
+    res.end(JSON.stringify({ success: false, cover: '' }));
+    return;
+  }
+
+  if (pathname === '/api/lyrics' || pathname === '/api/lyrics-words') {
+    const title = (reqUrl.searchParams.get('title') || '').trim();
+    const artist = (reqUrl.searchParams.get('artist') || '').trim();
+    const duration = reqUrl.searchParams.get('duration');
+
+    if (!title) {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: false, lyrics: '' }));
+      return;
+    }
+
+    try {
+      const lyricsData = await fetchLyricsFromLrclib(title, artist, duration);
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'public, max-age=3600'
+      });
+      res.end(JSON.stringify(lyricsData));
+    } catch (err) {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: false, lyrics: '' }));
+    }
     return;
   }
 
