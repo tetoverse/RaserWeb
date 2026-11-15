@@ -2946,19 +2946,19 @@ document.addEventListener('DOMContentLoaded', async () => {
   function normalizeEnabled() { return localStorage.getItem('riff_audio_normalize') === '1'; }
   function resetLevelWatcher() { levelAvgDb = -120; if (audioEngine && audioEngine.setNormalizeGainDb) audioEngine.setNormalizeGainDb(0); }
   setInterval(() => {
+    if (!normalizeEnabled()) {
+      if (levelAvgDb > -120) resetLevelWatcher();
+      return;
+    }
     const audio = el.nativeAudio;
     if (!audioEngine || !audioEngine.getLevelDb || !audio || audio.paused || !state.isPlaying) return;
     const db = audioEngine.getLevelDb();
-    if (normalizeEnabled()) {
-      if (db > -50) {
-        levelAvgDb = levelAvgDb <= -120 ? db : levelAvgDb + (db - levelAvgDb) * 0.05;
-        const gainDb = Math.max(-9, Math.min(9, -17 - levelAvgDb));
-        audioEngine.setNormalizeGainDb(gainDb);
-      }
-    } else if (levelAvgDb > -120) {
-      resetLevelWatcher();
+    if (db > -50) {
+      levelAvgDb = levelAvgDb <= -120 ? db : levelAvgDb + (db - levelAvgDb) * 0.05;
+      const gainDb = Math.max(-9, Math.min(9, -17 - levelAvgDb));
+      audioEngine.setNormalizeGainDb(gainDb);
     }
-  }, 100);
+  }, 250);
 
   syncSettingsSlidersToState();
   updateHqRouting();
