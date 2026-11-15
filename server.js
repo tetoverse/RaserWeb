@@ -2148,13 +2148,13 @@ const server = http.createServer(async (req, res) => {
     const prewarmSearchTracks = (tracks) => {
       if (!Array.isArray(tracks) || tracks.length === 0) return;
       setImmediate(() => {
-        for (const tr of tracks.slice(0, 2)) {
-          const tid = tr && typeof tr.id === 'string' ? tr.id.trim() : '';
-          if (!/^[\w-]{11}$/.test(tid)) continue;
-          const cached = streamCache.get(tid);
-          if (cached && cached.fullUrl && cached.expireAt > Date.now()) continue;
-          resolveAudioStreamDetails(tid, 'youtube', '', false, '', 0).catch(() => {});
-        }
+        if (inflightFullResolutions.size >= 2) return;
+        const tr = tracks[0];
+        const tid = tr && typeof tr.id === 'string' ? tr.id.trim() : '';
+        if (!/^[\w-]{11}$/.test(tid)) return;
+        const cached = streamCache.get(tid);
+        if (cached && cached.fullUrl && cached.expireAt > Date.now()) return;
+        resolveAudioStreamDetails(tid, 'youtube', '', false, '', 0).catch(() => {});
       });
     };
 
