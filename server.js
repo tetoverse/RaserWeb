@@ -2145,6 +2145,19 @@ const server = http.createServer(async (req, res) => {
       } catch (_) {}
     }
 
+    const prewarmSearchTracks = (tracks) => {
+      if (!Array.isArray(tracks) || tracks.length === 0) return;
+      setImmediate(() => {
+        for (const tr of tracks.slice(0, 2)) {
+          const tid = tr && typeof tr.id === 'string' ? tr.id.trim() : '';
+          if (!/^[\w-]{11}$/.test(tid)) continue;
+          const cached = streamCache.get(tid);
+          if (cached && cached.fullUrl && cached.expireAt > Date.now()) continue;
+          resolveAudioStreamDetails(tid, 'youtube', '', false, '', 0).catch(() => {});
+        }
+      });
+    };
+
     try {
       let results = await searchYouTubeMusic(q);
       if (!results || results.length === 0) {
@@ -2153,6 +2166,7 @@ const server = http.createServer(async (req, res) => {
       const formatted = (results || []).map(formatTrack).filter(Boolean);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: true, tracks: formatted, results: formatted, hasMore: false }));
+      prewarmSearchTracks(formatted);
     } catch (err) {
       const fallback = await searchITunes(q);
       const formatted = (fallback || []).map(formatTrack).filter(Boolean);
