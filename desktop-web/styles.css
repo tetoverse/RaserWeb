@@ -3727,6 +3727,17 @@ body.perf .playbar .time-label { transition: none !important; }
   visibility: hidden;
   opacity: 0;
 }
+.modal-backdrop.hidden *,
+.modal-backdrop.hidden *::before,
+.modal-backdrop.hidden *::after,
+.hidden *,
+.hidden *::before,
+.hidden *::after,
+.view:not(.active) *,
+.view:not(.active) *::before,
+.view:not(.active) *::after {
+  animation-play-state: paused !important;
+}
 .modal-backdrop.hidden .settings-card,
 .modal-backdrop.hidden .dialog-card,
 .modal-backdrop.hidden .modal-card {
