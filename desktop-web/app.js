@@ -7091,19 +7091,24 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
     if (typeof getPreblurredCoverUrl === 'function') {
-      getPreblurredCoverUrl(thumb, 6).then((preblurred) => {
+      const preImg = new Image();
+      preImg.crossOrigin = 'anonymous';
+      preImg.onload = () => {
         if (activeTvkAmbientCover !== thumb) return;
+        const preblurred = getPreblurredCoverUrl(preImg, thumb);
         const finalUrl = preblurred || thumb;
         if (preblurred) container.classList.add('preblurred');
         else container.classList.remove('preblurred');
         const cssUrl = `url(${JSON.stringify(finalUrl)})`;
         blobs.forEach(b => { b.style.backgroundImage = cssUrl; });
-      }).catch(() => {
+      };
+      preImg.onerror = () => {
         if (activeTvkAmbientCover !== thumb) return;
         container.classList.remove('preblurred');
         const cssUrl = `url(${JSON.stringify(thumb)})`;
         blobs.forEach(b => { b.style.backgroundImage = cssUrl; });
-      });
+      };
+      preImg.src = thumb;
     } else {
       container.classList.remove('preblurred');
       const cssUrl = `url(${JSON.stringify(thumb)})`;
