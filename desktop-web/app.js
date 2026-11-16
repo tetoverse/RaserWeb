@@ -28120,7 +28120,11 @@ function bindCoverHoldZoom(wrapEl) {
         e.preventDefault();
         e.stopPropagation();
         const target = (state.previousView && state.previousView !== state.currentView) ? state.previousView : 'discover';
-        switchView(target);
+        if (target === 'playlist-detail' && state.currentPlaylistId && typeof openPlaylistDetail === 'function') {
+          openPlaylistDetail(state.currentPlaylistId);
+        } else {
+          switchView(target);
+        }
       } else if (e.button === 4) {
         e.preventDefault();
         e.stopPropagation();
