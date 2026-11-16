@@ -7086,11 +7086,29 @@ document.addEventListener('DOMContentLoaded', async () => {
     container.dataset.painted = '1';
     const blobs = container.querySelectorAll('.tvk-ambient-blob');
     if (!thumb) {
+      container.classList.remove('preblurred');
       blobs.forEach(b => { b.style.backgroundImage = 'none'; });
       return;
     }
-    const cssUrl = `url(${JSON.stringify(thumb)})`;
-    blobs.forEach(b => { b.style.backgroundImage = cssUrl; });
+    if (typeof getPreblurredCoverUrl === 'function') {
+      getPreblurredCoverUrl(thumb, 22).then((preblurred) => {
+        if (activeTvkAmbientCover !== thumb) return;
+        const finalUrl = preblurred || thumb;
+        if (preblurred) container.classList.add('preblurred');
+        else container.classList.remove('preblurred');
+        const cssUrl = `url(${JSON.stringify(finalUrl)})`;
+        blobs.forEach(b => { b.style.backgroundImage = cssUrl; });
+      }).catch(() => {
+        if (activeTvkAmbientCover !== thumb) return;
+        container.classList.remove('preblurred');
+        const cssUrl = `url(${JSON.stringify(thumb)})`;
+        blobs.forEach(b => { b.style.backgroundImage = cssUrl; });
+      });
+    } else {
+      container.classList.remove('preblurred');
+      const cssUrl = `url(${JSON.stringify(thumb)})`;
+      blobs.forEach(b => { b.style.backgroundImage = cssUrl; });
+    }
   }
 
   function syncTvkAmbientPlayback() {
