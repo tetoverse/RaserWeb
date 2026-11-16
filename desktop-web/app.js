@@ -14397,11 +14397,17 @@ function renderClickableArtists(container, rawArtist, hintTrack = null) {
         document.documentElement.style.removeProperty('--playlist-accent-color');
       }
     }
-    if (el.mainContent) el.mainContent.scrollTop = 0;
+    if (el.mainContent) {
+      el.mainContent.style.overflowY = '';
+      el.mainContent.scrollTop = 0;
+    }
     switchView('playlist-detail');
     if (el.playlistTracksList) {
       renderTracks(el.playlistTracksList, filtered, 'playlist');
       setupPlaylistVisibilityPrewarm(filtered, el.playlistTracksList);
+      requestAnimationFrame(() => {
+        if (el.mainContent) el.mainContent.dispatchEvent(new Event('scroll'));
+      });
     }
     renderPlaylistsList();
   }
