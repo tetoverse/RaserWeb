@@ -7091,7 +7091,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
     if (typeof getPreblurredCoverUrl === 'function') {
-      getPreblurredCoverUrl(thumb, 22).then((preblurred) => {
+      getPreblurredCoverUrl(thumb, 6).then((preblurred) => {
         if (activeTvkAmbientCover !== thumb) return;
         const finalUrl = preblurred || thumb;
         if (preblurred) container.classList.add('preblurred');
