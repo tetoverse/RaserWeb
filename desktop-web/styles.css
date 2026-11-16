@@ -6640,6 +6640,9 @@ body.intensity-zero .lyric-word.active-word { opacity: 1; color: var(--md-sys-co
   filter: blur(var(--tvk-bg-blur, 22px)) saturate(1.95) contrast(1.12) brightness(0.76) !important;
   will-change: transform;
 }
+#tvk-ambient-bg.preblurred {
+  filter: saturate(1.95) contrast(1.12) brightness(0.76) !important;
+}
 .tv-karaoke::before {
   content: "";
   position: absolute;
