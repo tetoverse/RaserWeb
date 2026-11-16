@@ -7085,35 +7085,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     activeTvkAmbientCover = thumb;
     container.dataset.painted = '1';
     const blobs = container.querySelectorAll('.tvk-ambient-blob');
+    container.classList.remove('preblurred');
     if (!thumb) {
-      container.classList.remove('preblurred');
       blobs.forEach(b => { b.style.backgroundImage = 'none'; });
       return;
     }
-    if (typeof getPreblurredCoverUrl === 'function') {
-      const preImg = new Image();
-      preImg.crossOrigin = 'anonymous';
-      preImg.onload = () => {
-        if (activeTvkAmbientCover !== thumb) return;
-        const preblurred = getPreblurredCoverUrl(preImg, thumb);
-        const finalUrl = preblurred || thumb;
-        if (preblurred) container.classList.add('preblurred');
-        else container.classList.remove('preblurred');
-        const cssUrl = `url(${JSON.stringify(finalUrl)})`;
-        blobs.forEach(b => { b.style.backgroundImage = cssUrl; });
-      };
-      preImg.onerror = () => {
-        if (activeTvkAmbientCover !== thumb) return;
-        container.classList.remove('preblurred');
-        const cssUrl = `url(${JSON.stringify(thumb)})`;
-        blobs.forEach(b => { b.style.backgroundImage = cssUrl; });
-      };
-      preImg.src = thumb;
-    } else {
-      container.classList.remove('preblurred');
-      const cssUrl = `url(${JSON.stringify(thumb)})`;
-      blobs.forEach(b => { b.style.backgroundImage = cssUrl; });
-    }
+    const cssUrl = `url(${JSON.stringify(thumb)})`;
+    blobs.forEach(b => { b.style.backgroundImage = cssUrl; });
   }
 
   function syncTvkAmbientPlayback() {
