@@ -171,6 +171,8 @@
   let _isLoading = false;
   let _hasEnded = false;
   let currentLoadToken = 0;
+  let lastSeekMs = 0;
+  let lastSeekTarget = 0;
   let cachedRustFreqData = new Uint8Array(64);
   let isFetchingFreq = false;
   let lastFreqFetchMs = 0;
@@ -186,7 +188,7 @@
     } catch (_) {}
 
     const notifyTrackEnded = () => {
-      if (_hasEnded) return;
+      if (_hasEnded || _isLoading) return;
       _hasEnded = true;
       _isPlaying = false;
       cachedRustFreqData.fill(0);
@@ -300,6 +302,9 @@
       set: (val) => {
         const target = Math.max(0, Number(val) || 0);
         _currentPosition = target;
+        lastDispatchedPos = target;
+        lastSeekMs = performance.now();
+        lastSeekTarget = target;
         _hasEnded = false;
         invoke('rust_audio_seek', { position: target }).catch(() => {});
         audio.dispatchEvent(new Event('seeked'));
@@ -422,7 +427,12 @@
         }
         const wasPlaying = _isPlaying;
         _isPlaying = !!st.playing;
-        _currentPosition = typeof st.position === 'number' ? st.position : 0;
+        const rawPos = typeof st.position === 'number' ? st.position : 0;
+        if (performance.now() - lastSeekMs < 350 && Math.abs(rawPos - lastSeekTarget) > 1.5) {
+          _currentPosition = lastSeekTarget;
+        } else {
+          _currentPosition = rawPos;
+        }
         
         if (typeof st.duration === 'number' && st.duration > 0 && st.duration !== _currentDuration) {
           _currentDuration = st.duration;
