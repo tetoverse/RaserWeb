@@ -14455,9 +14455,18 @@ function renderClickableArtists(container, rawArtist, hintTrack = null) {
   function removeTrackFromCurrentPlaylist(trackId) {
     const pl = state.playlists.find(p => p.id === state.currentPlaylistId);
     if (!pl) return;
+    const prevScroll = el.mainContent ? el.mainContent.scrollTop : 0;
     pl.tracks = pl.tracks.filter(t => t.id !== trackId);
     localStorage.setItem('devsize_playlists', JSON.stringify(state.playlists));
     openPlaylistDetail(state.currentPlaylistId);
+    if (el.mainContent && prevScroll > 0) {
+      requestAnimationFrame(() => {
+        if (!el.mainContent) return;
+        const maxScroll = Math.max(0, el.mainContent.scrollHeight - el.mainContent.clientHeight);
+        el.mainContent.scrollTop = Math.min(prevScroll, maxScroll);
+        el.mainContent.dispatchEvent(new Event('scroll'));
+      });
+    }
   }
 
   function deleteCurrentPlaylist() {
