@@ -571,7 +571,7 @@ function resolveFullStreamViaYtDlp(targetId, cleanTarget = '', isUrl = false) {
  * 1. Fast Tier: In-process YouTube iOS Innertube resolver (~200-300ms) provides instant playback burst (bytes 0-1048575).
  * 2. Full Tier: Background yt-dlp tvhtml5 resolver (~3.5s) provides un-chunk-locked signed stream for subsequent ranges & full length.
  */
-async function resolveAudioStreamDetails(target, platform = '', queryFallback = '', forceRefresh = false, preferredQuality = '', rangeStart = 0) {
+async function resolveAudioStreamDetails(target, platform = '', queryFallback = '', forceRefresh = false, preferredQuality = '', rangeStart = 0, targetDuration = 0) {
   if (!target || typeof target !== 'string') {
     throw new Error('Invalid target for audio stream');
   }
@@ -618,8 +618,9 @@ async function resolveAudioStreamDetails(target, platform = '', queryFallback = 
       if (!targetId) {
         try {
           const searchResults = await searchYouTubeMusic(searchQuery);
-          if (Array.isArray(searchResults) && searchResults.length > 0 && searchResults[0].id) {
-            targetId = searchResults[0].id;
+          const bestMatch = pickBestSearchResult(searchResults, searchQuery, targetDuration);
+          if (bestMatch && bestMatch.id) {
+            targetId = bestMatch.id;
             if (norm) idMapCache.set(norm, targetId);
             if (cleanTarget) idMapCache.set(cleanTarget, targetId);
             saveIdCacheToDisk();
@@ -631,8 +632,9 @@ async function resolveAudioStreamDetails(target, platform = '', queryFallback = 
       if (!targetId) {
         try {
           const webResults = await searchYouTubeInnertubeWeb(searchQuery);
-          if (Array.isArray(webResults) && webResults.length > 0 && webResults[0].id) {
-            targetId = webResults[0].id;
+          const bestWeb = pickBestSearchResult(webResults, searchQuery, targetDuration);
+          if (bestWeb && bestWeb.id) {
+            targetId = bestWeb.id;
             if (norm) idMapCache.set(norm, targetId);
             if (cleanTarget) idMapCache.set(cleanTarget, targetId);
             saveIdCacheToDisk();
@@ -2570,7 +2572,8 @@ const server = http.createServer(async (req, res) => {
       }
 
       const effectivePlatform = isSoundcloud ? 'soundcloud' : (platform || 'youtube');
-      const streamDetails = await resolveAudioStreamDetails(target, effectivePlatform, queryFallback, refresh, quality, rangeStart);
+      const targetDuration = parseFloat(reqUrl.searchParams.get('duration') || '0') || 0;
+      const streamDetails = await resolveAudioStreamDetails(target, effectivePlatform, queryFallback, refresh, quality, rangeStart, targetDuration);
       const rawStreamUrl = streamDetails.url;
       const isHls = rawStreamUrl.includes('.m3u8') || rawStreamUrl.includes('/hls') || rawStreamUrl.includes('cf-hls-media') || rawStreamUrl.includes('playback.media-streaming');
 
@@ -2665,7 +2668,8 @@ const server = http.createServer(async (req, res) => {
       const forceYtDlp = reqUrl.searchParams.get('forceYtDlp') === '1';
       const effectivePlatform = isSoundcloud ? 'youtube' : platform;
       const rangeStart = forceYtDlp ? 1048576 : 0;
-      const streamDetails = await resolveAudioStreamDetails(target, effectivePlatform, queryFallback, refresh, '', rangeStart);
+      const targetDuration = parseFloat(reqUrl.searchParams.get('duration') || '0') || 0;
+      const streamDetails = await resolveAudioStreamDetails(target, effectivePlatform, queryFallback, refresh, '', rangeStart, targetDuration);
       const rawStreamUrl = streamDetails.url;
       const isHls = rawStreamUrl.includes('.m3u8');
       const proxiedUrl = `${serverOrigin}/api/audio-proxy?url=${encodeURIComponent(rawStreamUrl)}`;
