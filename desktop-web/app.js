@@ -9125,7 +9125,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function isTrackDurationCompatible(metaDur, audioDur) {
-      return !(metaDur > 0 && audioDur > 1 && Math.abs(metaDur - audioDur) > Math.max(30, metaDur * 0.25));
+      return !(metaDur > 0 && audioDur > 1 && Math.abs(metaDur - audioDur) > Math.max(120, metaDur * 0.6));
     }
 
     el.nativeAudio.addEventListener('ended', () => {
