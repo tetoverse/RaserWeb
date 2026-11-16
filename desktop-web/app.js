@@ -3784,6 +3784,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             const tvkProgRow = document.getElementById('tvk-progress-row');
             const tw = (tvkProgRow && tvkProgRow.clientWidth) ? tvkProgRow.clientWidth : (tvkScrubber.clientWidth || 320);
             const th = 36;
+            const dpr = window.devicePixelRatio || 1;
+            const targetW = Math.round(tw * dpr);
+            const targetH = Math.round(th * dpr);
+            if (tvkScrubber.width !== targetW || tvkScrubber.height !== targetH) {
+              tvkScrubber.width = targetW;
+              tvkScrubber.height = targetH;
+              tvkScrubber.style.width = `${tw}px`;
+              tvkScrubber.style.height = `${th}px`;
+              tCtx.resetTransform();
+              tCtx.scale(dpr, dpr);
+            }
             tCtx.clearRect(0, 0, tw, th);
 
             const targetProgress = dur > 0 ? Math.max(0, Math.min(1, cur / dur)) : 0;
