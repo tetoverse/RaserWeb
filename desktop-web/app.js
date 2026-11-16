@@ -8425,6 +8425,20 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   window.addEventListener('keydown', (e) => {
+    if (e.key === 'F11') {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (window.__TAURI__?.core?.invoke) {
+        window.__TAURI__.core.invoke('toggle_fullscreen_window').catch(() => {});
+      } else if (window.__TAURI_INTERNALS__?.invoke) {
+        window.__TAURI_INTERNALS__.invoke('toggle_fullscreen_window').catch(() => {});
+      } else if (document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {});
+      } else {
+        document.documentElement.requestFullscreen?.().catch(() => {});
+      }
+      return;
+    }
     if (!runKeyboardShortcut(e)) return;
     e.preventDefault();
     e.stopImmediatePropagation();
