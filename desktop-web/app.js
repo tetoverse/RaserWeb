@@ -4666,6 +4666,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   function safeSeekTo(targetTime) {
     if (!el.nativeAudio || !Number.isFinite(targetTime)) return;
     const target = Math.max(0, targetTime);
+    if (target <= 0.1) {
+      scrubProgress = 0;
+      scrubPrevKnobX = null;
+      lastDisplayedSec = 0;
+      if (typeof lastTimeupdateSec !== 'undefined') lastTimeupdateSec = 0;
+      if (el.timeCurrent) el.timeCurrent.textContent = '0:00';
+      if (el.tvkTimeCurrent) el.tvkTimeCurrent.textContent = '0:00';
+      if (el.tvkSeekSlider) el.tvkSeekSlider.value = 0;
+    }
     const curTrack = state.currentTrack;
     const cid = curTrack ? getTrackCanonicalId(curTrack) : null;
     const cached = cid ? trackBlobMemoryCache.get(cid) : null;
@@ -8695,9 +8704,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (el.nativeAudio && el.nativeAudio.currentTime > 3 && (now - lastPrevClickTime > 2000)) {
       lastPrevClickTime = now;
       safeSeekTo(0);
-      if (state.isPlaying && el.nativeAudio.paused) {
-        playSmooth();
-      }
+      playSmooth();
       return;
     }
     lastPrevClickTime = now;
@@ -8727,7 +8734,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (state.isShuffle) {
       if (el.nativeAudio) {
         safeSeekTo(0);
-        if (state.isPlaying && el.nativeAudio.paused) playSmooth();
+        playSmooth();
       }
       return;
     }
@@ -8739,7 +8746,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       } else {
         if (el.nativeAudio) {
           safeSeekTo(0);
-          if (state.isPlaying && el.nativeAudio.paused) playSmooth();
+          playSmooth();
         }
         return;
       }
@@ -9142,7 +9149,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       } else {
         const expectedDur = getReliableTrackDuration();
         const pos = el.nativeAudio.currentTime || 0;
-        if (state.currentTrack && state.currentTrack.platform !== 'local' && (expectedDur <= 0 || pos < expectedDur - 10) && (state._streamRecoverCount || 0) < 3) {
+        const isTauriNative = !!(window.electronAPI && window.electronAPI.isTauri);
+        if (!isTauriNative && state.currentTrack && state.currentTrack.platform !== 'local' && (expectedDur <= 0 || pos < expectedDur - 10) && (state._streamRecoverCount || 0) < 3) {
           state._streamRecoverCount = (state._streamRecoverCount || 0) + 1;
           delete state.currentTrack._preloadedStreamUrl;
           recoverCurrentStream(pos);
