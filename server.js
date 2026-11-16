@@ -2406,8 +2406,55 @@ const server = http.createServer(async (req, res) => {
 
   // Artist & Vibe endpoints
   if (pathname === '/api/artist') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ success: true, tracks: [], albums: [], topTracks: [] }));
+    const rawName = (reqUrl.searchParams.get('name') || '').trim();
+    if (!rawName) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'Missing artist name' }));
+      return;
+    }
+
+    (async () => {
+      try {
+        const cleanName = rawName.replace(/\s*-\s*Topic$/i, '').trim();
+        const [dzData, ytmRaw] = await Promise.all([
+          fetch(`https://api.deezer.com/search/artist?q=${encodeURIComponent(cleanName)}&limit=1`, {
+            signal: AbortSignal.timeout(4500)
+          }).then(r => r.ok ? r.json() : null).catch(() => null),
+          searchYouTubeMusic(cleanName).catch(() => [])
+        ]);
+
+        const dzArtist = dzData && Array.isArray(dzData.data) && dzData.data[0] ? dzData.data[0] : null;
+        const formattedTracks = (Array.isArray(ytmRaw) ? ytmRaw : []).map(formatTrack).filter(Boolean);
+
+        const avatar = (dzArtist && (dzArtist.picture_xl || dzArtist.picture_big || dzArtist.picture_medium))
+          || (formattedTracks[0] && formattedTracks[0].thumbnail)
+          || '';
+        const artistName = (dzArtist && dzArtist.name) || cleanName;
+        const fans = (dzArtist && typeof dzArtist.nb_fan === 'number') ? dzArtist.nb_fan : 0;
+        const isKnownArtist = !!(dzArtist || formattedTracks.length > 0);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          success: true,
+          artist: {
+            name: artistName,
+            isKnownArtist,
+            isVerified: !!dzArtist,
+            avatar,
+            banner: avatar,
+            fans,
+            nb_fan: fans,
+            monthlyListeners: fans > 0 ? `${fans.toLocaleString()} fans` : '',
+            bio: '',
+            tracks: formattedTracks,
+            albums: []
+          }
+        }));
+      } catch (err) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message || 'Artist lookup failed' }));
+      }
+    })();
     return;
   }
   if (pathname === '/api/vibe') {
