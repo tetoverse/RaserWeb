@@ -2940,6 +2940,23 @@ document.addEventListener('DOMContentLoaded', async () => {
   const audioEngine = new window.RiffAudioEngine();
   window.audioEngine = audioEngine;
   let hlsInstance = null;
+  let hlsLoadPromise = null;
+  function ensureHlsLoaded() {
+    if (window.Hls) return Promise.resolve(window.Hls);
+    if (hlsLoadPromise) return hlsLoadPromise;
+    hlsLoadPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = '../../assets/hls.min.js';
+      script.async = true;
+      script.onload = () => resolve(window.Hls);
+      script.onerror = (err) => {
+        hlsLoadPromise = null;
+        reject(err);
+      };
+      document.head.appendChild(script);
+    });
+    return hlsLoadPromise;
+  }
   animationFrameId = null;
 
   let levelAvgDb = -120;
@@ -4999,7 +5016,8 @@ document.addEventListener('DOMContentLoaded', async () => {
           hlsInstance = null;
         }
         el.nativeAudio.preload = 'auto';
-        if (track._preloadedStreamUrl.includes('.m3u8') && window.Hls && Hls.isSupported() && !(window.electronAPI && window.electronAPI.isTauri)) {
+        if (track._preloadedStreamUrl.includes('.m3u8') && !(window.electronAPI && window.electronAPI.isTauri) && (await ensureHlsLoaded().catch(() => null)) && window.Hls && Hls.isSupported()) {
+          if (currentToken !== state.loadToken) return;
           hlsInstance = new Hls({ enableWorker: true, lowLatencyMode: true, maxBufferLength: 30, maxMaxBufferLength: 60, maxBufferSize: 30 * 1000 * 1000 });
           hlsInstance.on(Hls.Events.ERROR, (_, errData) => {
             if (errData && errData.fatal) {
@@ -5075,7 +5093,8 @@ document.addEventListener('DOMContentLoaded', async () => {
           if (window.electronAPI && window.electronAPI.isTauri) {
             el.nativeAudio.src = `${getApiBaseUrl()}/api/stream?url=${encodeURIComponent(track.url || data.streamUrl)}&platform=${encodeURIComponent(track.platform || 'soundcloud')}&id=${encodeURIComponent(track.id || '')}`;
             playSmooth();
-          } else if (window.Hls && Hls.isSupported()) {
+          } else if ((await ensureHlsLoaded().catch(() => null)) && window.Hls && Hls.isSupported()) {
+            if (currentToken !== state.loadToken) return;
             hlsInstance = new Hls({ enableWorker: true, lowLatencyMode: true, maxBufferLength: 30, maxMaxBufferLength: 60, maxBufferSize: 30 * 1000 * 1000 });
             hlsInstance.on(Hls.Events.ERROR, (_, errData) => {
               if (errData && errData.fatal) {
@@ -5146,7 +5165,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // Only attach HLS if the native audio stream is NOT already playing smoothly!
             const isPlayingHealthy = el.nativeAudio && !el.nativeAudio.paused && !el.nativeAudio.error && el.nativeAudio.currentTime > 0.1;
-            if (!isPlayingHealthy && data.isHls && window.Hls && Hls.isSupported() && !(window.electronAPI && window.electronAPI.isTauri)) {
+            if (!isPlayingHealthy && data.isHls && !(window.electronAPI && window.electronAPI.isTauri) && (await ensureHlsLoaded().catch(() => null)) && window.Hls && Hls.isSupported()) {
+              if (currentToken !== state.loadToken) return;
               if (hlsInstance) {
                 try { hlsInstance.destroy(); } catch (_) {}
                 hlsInstance = null;
@@ -8866,7 +8886,8 @@ document.addEventListener('DOMContentLoaded', async () => {
               try { hlsInstance.destroy(); } catch (_) {}
               hlsInstance = null;
             }
-            if ((d.isHls || d.streamUrl.includes('.m3u8')) && window.Hls && Hls.isSupported()) {
+            if ((d.isHls || d.streamUrl.includes('.m3u8')) && (await ensureHlsLoaded().catch(() => null)) && window.Hls && Hls.isSupported()) {
+              if (myToken !== state.loadToken) return;
               hlsInstance = new Hls({ enableWorker: true, lowLatencyMode: true });
               hlsInstance.loadSource(d.streamUrl);
               hlsInstance.attachMedia(el.nativeAudio);
