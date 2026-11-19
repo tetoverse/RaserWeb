@@ -2129,6 +2129,78 @@ async function fetchLyricsFromLrclib(title, artist, duration, videoId) {
   return responseData;
 }
 
+const DEFAULT_MAX_BODY_BYTES = 262144; // 256 KiB
+
+/**
+ * Read a request body up to maxBytes.
+ * Stops buffering and responds with 413 Payload Too Large if exceeded.
+ * Returns the UTF-8 body string, or null if rejected/aborted.
+ */
+function readBoundedBody(req, res, maxBytes = DEFAULT_MAX_BODY_BYTES) {
+  return new Promise((resolve) => {
+    const contentLength = Number(req.headers['content-length']);
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+      req.pause();
+      if (!res.headersSent && !res.writableEnded) {
+        res.writeHead(413, { 'Content-Type': 'application/json', 'Connection': 'close' });
+        res.end(JSON.stringify({ success: false, error: 'Payload Too Large' }));
+      }
+      resolve(null);
+      return;
+    }
+
+    const chunks = [];
+    let totalBytes = 0;
+    let settled = false;
+
+    const cleanup = () => {
+      req.removeListener('data', onData);
+      req.removeListener('end', onEnd);
+      req.removeListener('error', onAbortOrError);
+      req.removeListener('aborted', onAbortOrError);
+    };
+
+    const onAbortOrError = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      chunks.length = 0;
+      resolve(null);
+    };
+
+    const onData = (chunk) => {
+      if (settled) return;
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalBytes += buf.length;
+      if (totalBytes > maxBytes) {
+        settled = true;
+        cleanup();
+        chunks.length = 0;
+        req.pause();
+        if (!res.headersSent && !res.writableEnded) {
+          res.writeHead(413, { 'Content-Type': 'application/json', 'Connection': 'close' });
+          res.end(JSON.stringify({ success: false, error: 'Payload Too Large' }));
+        }
+        resolve(null);
+        return;
+      }
+      chunks.push(buf);
+    };
+
+    const onEnd = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(Buffer.concat(chunks, totalBytes).toString('utf8'));
+    };
+
+    req.on('data', onData);
+    req.on('end', onEnd);
+    req.on('error', onAbortOrError);
+    req.on('aborted', onAbortOrError);
+  });
+}
+
 function negotiateEncoding(acceptEncodingHeader, availableEncodings) {
   if (acceptEncodingHeader === undefined || acceptEncodingHeader === null) {
     return availableEncodings.includes('identity') ? 'identity' : availableEncodings[0] || null;
@@ -2215,10 +2287,9 @@ const server = http.createServer(async (req, res) => {
 
   // API Shorten endpoint
   if (pathname === '/api/shorten' && req.method === 'POST') {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', () => {
-      try {
+    const body = await readBoundedBody(req, res);
+    if (body === null) return;
+    try {
         const data = JSON.parse(body || '{}');
         const track = {
           n: (data.n || data.title || '').trim(),
@@ -2256,7 +2327,6 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false, error: err.message }));
       }
-    });
     return;
   }
 
@@ -2386,13 +2456,9 @@ function serializeJsonForHtmlScript(value) {
 
   // Lightweight playlist/queue Innertube ID + fastUrl prewarm (NO yt-dlp spawned)
   if (pathname === '/api/prewarm-ids' && req.method === 'POST') {
-    let body = '';
-    req.on('data', chunk => {
-      body += chunk;
-      if (body.length > 262144) req.destroy();
-    });
-    req.on('end', async () => {
-      try {
+    const body = await readBoundedBody(req, res);
+    if (body === null) return;
+    try {
         const parsed = JSON.parse(body || '{}');
         const list = Array.isArray(parsed.tracks) ? parsed.tracks.slice(0, 20) : [];
         const resolved = {};
@@ -2467,7 +2533,6 @@ function serializeJsonForHtmlScript(value) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false, error: e.message }));
       }
-    });
     return;
   }
 
@@ -2540,10 +2605,9 @@ function serializeJsonForHtmlScript(value) {
     return;
   }
   if (pathname === '/api/vibe') {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', async () => {
-      try {
+    const body = await readBoundedBody(req, res);
+    if (body === null) return;
+    try {
         let payload = {};
         try { payload = JSON.parse(body || '{}'); } catch (_) {}
 
@@ -2604,7 +2668,6 @@ function serializeJsonForHtmlScript(value) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, tracks: [] }));
       }
-    });
     return;
   }
 
@@ -2836,17 +2899,15 @@ function serializeJsonForHtmlScript(value) {
     };
 
     if (req.method === 'POST') {
-      let body = '';
-      req.on('data', chunk => body += chunk);
-      req.on('end', () => {
-        try {
-          const parsed = JSON.parse(body || '{}');
-          handleBatchResolve(parsed.tracks || []);
-        } catch (e) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ success: false, error: 'Invalid JSON' }));
-        }
-      });
+      const body = await readBoundedBody(req, res);
+      if (body === null) return;
+      try {
+        const parsed = JSON.parse(body || '{}');
+        handleBatchResolve(parsed.tracks || []);
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'Invalid JSON' }));
+      }
       return;
     } else {
       const q = reqUrl.searchParams.get('q') || '';
@@ -2860,21 +2921,19 @@ function serializeJsonForHtmlScript(value) {
 
   // Desktop helper endpoints
   if (pathname === '/api/i18n-batch' || pathname === '/api/translate') {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', async () => {
-      try {
-        const payload = JSON.parse(body || '{}');
-        const target = payload.target || payload.targetLang || payload.to || 'en';
-        const texts = Array.isArray(payload.texts) ? payload.texts : (payload.text ? [payload.text] : []);
-        const results = await handleI18nBatch(texts, target);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, translations: results }));
-      } catch (e) {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, translations: [] }));
-      }
-    });
+    const body = await readBoundedBody(req, res);
+    if (body === null) return;
+    try {
+      const payload = JSON.parse(body || '{}');
+      const target = payload.target || payload.targetLang || payload.to || 'en';
+      const texts = Array.isArray(payload.texts) ? payload.texts : (payload.text ? [payload.text] : []);
+      const results = await handleI18nBatch(texts, target);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, translations: results }));
+    } catch (e) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, translations: [] }));
+    }
     return;
   }
   if (pathname === '/api/state' || pathname.startsWith('/api/lastfm')) {
@@ -2947,25 +3006,23 @@ function serializeJsonForHtmlScript(value) {
     }
 
     if (req.method === 'POST') {
-      let body = '';
-      req.on('data', chunk => body += chunk);
-      req.on('end', () => {
-        try {
-          const payload = JSON.parse(body || '{}');
-          const sessionId = payload.sessionId;
-          const authData = payload.auth;
-          if (sessionId && authData) {
-            global.__cloudAuthSessions.set(sessionId, { auth: authData, createdAt: Date.now() });
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            return res.end(JSON.stringify({ success: true }));
-          }
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ success: false, error: 'Missing sessionId or auth' }));
-        } catch (e) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ success: false, error: e.message }));
+      const body = await readBoundedBody(req, res);
+      if (body === null) return;
+      try {
+        const payload = JSON.parse(body || '{}');
+        const sessionId = payload.sessionId;
+        const authData = payload.auth;
+        if (sessionId && authData) {
+          global.__cloudAuthSessions.set(sessionId, { auth: authData, createdAt: Date.now() });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ success: true }));
         }
-      });
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'Missing sessionId or auth' }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: e.message }));
+      }
       return;
     }
 
@@ -3145,6 +3202,8 @@ if (require.main === module) {
 
 module.exports = {
   server,
+  DEFAULT_MAX_BODY_BYTES,
+  readBoundedBody,
   resolveAudioStream,
   resolveAudioStreamDetails,
   fetchYouTubeInnertubeStream,
