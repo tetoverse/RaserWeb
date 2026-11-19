@@ -13,6 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const url = require('url');
 const crypto = require('crypto');
+const zlib = require('zlib');
 const { execFile } = require('child_process');
 
 if (dns && typeof dns.setDefaultResultOrder === 'function') {
@@ -2947,20 +2948,81 @@ const server = http.createServer(async (req, res) => {
   const referer = (req.headers.referer || '').toLowerCase();
   const isApp = host.startsWith('app.') || pathname.startsWith('/app') || reqUrl.searchParams.get('app') === '1' || referer.includes('/app') || referer.includes('app=1') || req.headers['x-is-app'] === '1';
 
-  // Main page / player / web player
-  if (pathname === '/' || pathname === '/index.html' || pathname === '/app' || pathname === '/app/') {
-    // If accessing via app subdomain or /app, serve the 1:1 Desktop Web Player!
-    const targetFile = isApp ? path.join(PUBLIC_DIR, 'desktop-web', 'index.html') : path.join(PUBLIC_DIR, 'index.html');
-    fs.readFile(targetFile, (err, data) => {
-      if (err) {
+  // Helper for serving static files with ETag/304 revalidation and brotli/gzip compression
+  function sendStaticFile(filePath, overrideCacheControl) {
+    fs.stat(filePath, (statErr, stat) => {
+      if (statErr || !stat.isFile()) {
         res.writeHead(404, { 'Content-Type': 'text/plain' });
         res.end('Not Found');
         return;
       }
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=UTF-8', 'Cache-Control': 'no-cache' });
-      res.end(data);
+
+      const ext = path.extname(filePath).toLowerCase();
+      const mimeTypes = {
+        '.html': 'text/html; charset=UTF-8',
+        '.js': 'application/javascript; charset=UTF-8',
+        '.css': 'text/css; charset=UTF-8',
+        '.svg': 'image/svg+xml',
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.webp': 'image/webp',
+        '.ico': 'image/x-icon',
+        '.woff2': 'font/woff2',
+        '.json': 'application/json; charset=UTF-8'
+      };
+      const contentType = mimeTypes[ext] || 'application/octet-stream';
+      const isMutableText = ext === '.html' || ext === '.js' || ext === '.css';
+      const cacheControl = overrideCacheControl || (isMutableText ? 'no-cache, must-revalidate' : 'public, max-age=86400');
+      const etag = `W/"${stat.size}-${Math.floor(stat.mtimeMs)}"`;
+
+      if (req.headers['if-none-match'] === etag) {
+        res.writeHead(304, {
+          'ETag': etag,
+          'Cache-Control': cacheControl,
+          'Vary': 'Accept-Encoding'
+        });
+        res.end();
+        return;
+      }
+
+      const compressible = ext === '.html' || ext === '.js' || ext === '.css' || ext === '.json' || ext === '.svg';
+      const acceptEncoding = String(req.headers['accept-encoding'] || '');
+      const headers = {
+        'Content-Type': contentType,
+        'Cache-Control': cacheControl,
+        'ETag': etag,
+        'Vary': 'Accept-Encoding'
+      };
+
+      const stream = fs.createReadStream(filePath);
+      stream.on('error', () => {
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'text/plain' });
+        }
+        res.end('Internal Server Error');
+      });
+
+      if (compressible && /\bbr\b/i.test(acceptEncoding)) {
+        headers['Content-Encoding'] = 'br';
+        res.writeHead(200, headers);
+        stream.pipe(zlib.createBrotliCompress()).pipe(res);
+      } else if (compressible && /\bgzip\b/i.test(acceptEncoding)) {
+        headers['Content-Encoding'] = 'gzip';
+        res.writeHead(200, headers);
+        stream.pipe(zlib.createGzip()).pipe(res);
+      } else {
+        res.writeHead(200, headers);
+        stream.pipe(res);
+      }
     });
-    return;
+  }
+
+  // Main page / player / web player
+  if (pathname === '/' || pathname === '/index.html' || pathname === '/app' || pathname === '/app/') {
+    // If accessing via app subdomain or /app, serve the 1:1 Desktop Web Player!
+    const targetFile = isApp ? path.join(PUBLIC_DIR, 'desktop-web', 'index.html') : path.join(PUBLIC_DIR, 'index.html');
+    return sendStaticFile(targetFile, 'no-cache, must-revalidate');
   }
 
   // If in app context and file exists in desktop-web, serve it
@@ -2968,54 +3030,19 @@ const server = http.createServer(async (req, res) => {
     const cleanPath = pathname.replace(/^\/app(\/|$)/, '/');
     const desktopPath = path.normalize(path.join(PUBLIC_DIR, 'desktop-web', cleanPath)).replace(/^(\.\.[\/\\])+/, '');
     if (desktopPath.startsWith(path.join(PUBLIC_DIR, 'desktop-web')) && fs.existsSync(desktopPath) && fs.statSync(desktopPath).isFile()) {
-      const ext = path.extname(desktopPath).toLowerCase();
-      const mimeTypes = {
-        '.html': 'text/html; charset=UTF-8',
-        '.js': 'application/javascript',
-        '.css': 'text/css',
-        '.svg': 'image/svg+xml',
-        '.png': 'image/png',
-        '.jpg': 'image/jpeg',
-        '.json': 'application/json'
-      };
-      res.writeHead(200, {
-        'Content-Type': mimeTypes[ext] || 'application/octet-stream',
-        'Cache-Control': (ext === '.js' || ext === '.css' || ext === '.html') ? 'no-cache, must-revalidate' : 'public, max-age=86400'
-      });
-      fs.createReadStream(desktopPath).pipe(res);
-      return;
+      return sendStaticFile(desktopPath);
     }
   }
 
   // Static files fallback
   const safePath = path.normalize(path.join(PUBLIC_DIR, pathname)).replace(/^(\.\.[\/\\])+/, '');
   if (safePath.startsWith(PUBLIC_DIR) && fs.existsSync(safePath) && fs.statSync(safePath).isFile()) {
-    const ext = path.extname(safePath).toLowerCase();
-    const mimeTypes = {
-      '.html': 'text/html; charset=UTF-8',
-      '.js': 'application/javascript',
-      '.css': 'text/css',
-      '.svg': 'image/svg+xml',
-      '.png': 'image/png',
-      '.jpg': 'image/jpeg',
-      '.json': 'application/json'
-    };
-    res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' });
-    fs.createReadStream(safePath).pipe(res);
-    return;
+    return sendStaticFile(safePath);
   }
 
   // Fallback to index.html
   const fallbackFile = isApp ? path.join(PUBLIC_DIR, 'desktop-web', 'index.html') : path.join(PUBLIC_DIR, 'index.html');
-  fs.readFile(fallbackFile, (err, data) => {
-    if (err) {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('Not Found');
-      return;
-    }
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=UTF-8' });
-    res.end(data);
-  });
+  return sendStaticFile(fallbackFile, 'no-cache, must-revalidate');
 });
 
 if (require.main === module) {

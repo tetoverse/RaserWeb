@@ -216,6 +216,17 @@
         console.warn('[RaserFirebase] setPersistence note:', pErr);
       }
 
+      try {
+        const redirectResult = await auth.getRedirectResult();
+        if (redirectResult && redirectResult.user) {
+          currentUser = redirectResult.user;
+          saveUserProfile(redirectResult.user);
+          updateAccountUI();
+        }
+      } catch (redirectErr) {
+        console.warn('[RaserFirebase] getRedirectResult note:', redirectErr);
+      }
+
       auth.onAuthStateChanged(async (user) => {
         if (user) {
           currentUser = user;
@@ -778,7 +789,14 @@
     const provider = new window.firebase.auth.GoogleAuthProvider();
     provider.addScope('email');
     provider.addScope('profile');
-    return auth.signInWithPopup(provider);
+    try {
+      return await auth.signInWithPopup(provider);
+    } catch (err) {
+      if (err && (err.code === 'auth/popup-blocked' || err.code === 'auth/operation-not-supported-in-this-environment')) {
+        return auth.signInWithRedirect(provider);
+      }
+      throw err;
+    }
   }
 
   async function signInGuest() {
