@@ -2128,6 +2128,75 @@ async function fetchLyricsFromLrclib(title, artist, duration, videoId) {
   return responseData;
 }
 
+function negotiateEncoding(acceptEncodingHeader, availableEncodings) {
+  if (acceptEncodingHeader === undefined || acceptEncodingHeader === null) {
+    return availableEncodings.includes('identity') ? 'identity' : availableEncodings[0] || null;
+  }
+
+  const raw = String(acceptEncodingHeader).trim();
+  if (!raw) {
+    return availableEncodings.includes('identity') ? 'identity' : availableEncodings[0] || null;
+  }
+
+  const parsed = new Map();
+  const items = raw.split(',');
+
+  for (const item of items) {
+    const parts = item.split(';');
+    const coding = parts[0].trim().toLowerCase();
+    if (!coding) continue;
+
+    let q = 1;
+    let valid = true;
+
+    for (let i = 1; i < parts.length; i++) {
+      const param = parts[i].trim();
+      if (!param) continue;
+      const eqIdx = param.indexOf('=');
+      if (eqIdx === -1) continue;
+      const key = param.slice(0, eqIdx).trim().toLowerCase();
+      const val = param.slice(eqIdx + 1).trim();
+      if (key === 'q') {
+        const num = Number(val);
+        if (!val || !Number.isFinite(num) || num < 0 || num > 1) {
+          valid = false;
+          break;
+        }
+        q = num;
+      }
+    }
+
+    if (!valid) continue;
+    parsed.set(coding, q);
+  }
+
+  const wildcardQ = parsed.has('*') ? parsed.get('*') : null;
+  let bestEncoding = null;
+  let bestQ = 0;
+
+  for (const encoding of availableEncodings) {
+    let q;
+    if (parsed.has(encoding)) {
+      q = parsed.get(encoding);
+    } else if (wildcardQ !== null) {
+      q = wildcardQ;
+    } else if (encoding === 'identity') {
+      q = 0.0001;
+    } else {
+      q = 0;
+    }
+
+    if (q <= 0) continue;
+
+    if (q > bestQ) {
+      bestQ = q;
+      bestEncoding = encoding;
+    }
+  }
+
+  return bestEncoding;
+}
+
 const server = http.createServer(async (req, res) => {
   const reqUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = reqUrl.pathname;
@@ -2987,7 +3056,20 @@ const server = http.createServer(async (req, res) => {
       }
 
       const compressible = ext === '.html' || ext === '.js' || ext === '.css' || ext === '.json' || ext === '.svg';
-      const acceptEncoding = String(req.headers['accept-encoding'] || '');
+      const chosenEncoding = negotiateEncoding(
+        req.headers['accept-encoding'],
+        compressible ? ['br', 'gzip', 'identity'] : ['identity']
+      );
+
+      if (!chosenEncoding) {
+        res.writeHead(406, {
+          'Content-Type': 'text/plain; charset=UTF-8',
+          'Vary': 'Accept-Encoding'
+        });
+        res.end('Not Acceptable');
+        return;
+      }
+
       const headers = {
         'Content-Type': contentType,
         'Cache-Control': cacheControl,
@@ -3003,11 +3085,11 @@ const server = http.createServer(async (req, res) => {
         res.end('Internal Server Error');
       });
 
-      if (compressible && /\bbr\b/i.test(acceptEncoding)) {
+      if (chosenEncoding === 'br') {
         headers['Content-Encoding'] = 'br';
         res.writeHead(200, headers);
         stream.pipe(zlib.createBrotliCompress()).pipe(res);
-      } else if (compressible && /\bgzip\b/i.test(acceptEncoding)) {
+      } else if (chosenEncoding === 'gzip') {
         headers['Content-Encoding'] = 'gzip';
         res.writeHead(200, headers);
         stream.pipe(zlib.createGzip()).pipe(res);
