@@ -2274,6 +2274,15 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+function serializeJsonForHtmlScript(value) {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
   // Short URL direct visit: /s/:code (7 characters)
   const shortMatch = pathname.match(/^\/s\/([a-zA-Z0-9]{7})\/?$/);
   if (shortMatch) {
@@ -2287,7 +2296,7 @@ const server = http.createServer(async (req, res) => {
           res.end('Server Error');
           return;
         }
-        const injection = `<script>window.__PRELOADED_TRACK__ = ${JSON.stringify(track)};</script>`;
+        const injection = `<script>window.__PRELOADED_TRACK__ = ${serializeJsonForHtmlScript(track)};</script>`;
         const modifiedHtml = html.replace('<head>', `<head>\n  ${injection}`);
         res.writeHead(200, { 'Content-Type': 'text/html; charset=UTF-8', 'Cache-Control': 'no-cache' });
         res.end(modifiedHtml);
