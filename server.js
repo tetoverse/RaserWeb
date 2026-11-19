@@ -15,6 +15,7 @@ const url = require('url');
 const crypto = require('crypto');
 const zlib = require('zlib');
 const { execFile } = require('child_process');
+const { validateAndPinUrl } = require('./ssrf-guard');
 
 if (dns && typeof dns.setDefaultResultOrder === 'function') {
   dns.setDefaultResultOrder('ipv4first');
@@ -743,7 +744,7 @@ function resolveAudioStream(target, platform = '', queryFallback = '', forceRefr
  * into the HTTP response so HTML5 <audio> elements in desktop/mobile browsers
  * can play SoundCloud and HLS streams seamlessly without requiring Hls.js.
  */
-function streamHlsAudio(req, res, playlistUrl) {
+async function streamHlsAudio(req, res, playlistUrl, options = {}) {
   let isAborted = false;
   let activeReq = null;
 
@@ -758,18 +759,22 @@ function streamHlsAudio(req, res, playlistUrl) {
   req.on('close', abort);
   res.on('close', abort);
 
-  let parsed;
+  let validatedPlaylist;
   try {
-    parsed = new URL(playlistUrl);
-  } catch (e) {
-    if (!res.headersSent) res.writeHead(400, { 'Access-Control-Allow-Origin': '*' }).end('Invalid playlist URL');
+    validatedPlaylist = await validateAndPinUrl(playlistUrl, options.ssrfOptions);
+  } catch (err) {
+    if (!res.headersSent) {
+      res.writeHead(err.statusCode || 403, { 'Access-Control-Allow-Origin': '*' }).end(err.message || 'Blocked target');
+    }
     return;
   }
 
+  const parsed = validatedPlaylist.parsed;
   const client = parsed.protocol === 'https:' ? https : http;
 
   const m3u8Req = client.get(playlistUrl, {
     agent: parsed.protocol === 'https:' ? keepAliveHttpsAgent : keepAliveHttpAgent,
+    lookup: validatedPlaylist.lookup,
     headers: { 'User-Agent': 'Mozilla/5.0' },
     timeout: 10000
   }, (m3u8Res) => {
@@ -819,13 +824,15 @@ function streamHlsAudio(req, res, playlistUrl) {
       for (let i = 0; i < segmentUrls.length; i++) {
         if (isAborted || res.writableEnded) break;
         const segUrl = segmentUrls[i];
-        await new Promise((resolveSeg) => {
+        await new Promise(async (resolveSeg) => {
           if (isAborted || res.writableEnded) return resolveSeg();
           try {
-            const segParsed = new URL(segUrl);
+            const validatedSeg = await validateAndPinUrl(segUrl, options.ssrfOptions);
+            const segParsed = validatedSeg.parsed;
             const segClient = segParsed.protocol === 'https:' ? https : http;
             activeReq = segClient.get(segUrl, {
               agent: segParsed.protocol === 'https:' ? keepAliveHttpsAgent : keepAliveHttpAgent,
+              lookup: validatedSeg.lookup,
               headers: { 'User-Agent': 'Mozilla/5.0' },
               timeout: 15000
             }, (segRes) => {
@@ -960,25 +967,18 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, options 
 
   // Handle HLS playlists on stream endpoint: stream segments as continuous audio
   if (options && options.isStreamEndpoint && (targetUrl.includes('.m3u8') || targetUrl.includes('/hls') || targetUrl.includes('cf-hls-media') || targetUrl.includes('playback.media-streaming'))) {
-    return streamHlsAudio(req, res, targetUrl);
+    return streamHlsAudio(req, res, targetUrl, options);
   }
 
-  let parsed;
+  let validatedTarget;
   try {
-    parsed = new URL(targetUrl);
-  } catch (e) {
-    res.writeHead(400, { 'Access-Control-Allow-Origin': '*' });
-    return res.end('Invalid url');
+    validatedTarget = await validateAndPinUrl(targetUrl, options.ssrfOptions);
+  } catch (err) {
+    res.writeHead(err.statusCode || 403, { 'Access-Control-Allow-Origin': '*' });
+    return res.end(err.message || 'Blocked target');
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    res.writeHead(400, { 'Access-Control-Allow-Origin': '*' });
-    return res.end('Unsupported protocol');
-  }
+  const parsed = validatedTarget.parsed;
   const hostLower = (parsed.hostname || '').toLowerCase();
-  if (hostLower === 'localhost' || hostLower === '127.0.0.1' || hostLower === '::1') {
-    res.writeHead(403, { 'Access-Control-Allow-Origin': '*' });
-    return res.end('Blocked target');
-  }
 
   // Derive targetId if missing from options
   let effectiveTargetId = options.targetId;
@@ -1057,6 +1057,7 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, options 
     method: req.method,
     family: 4,
     agent: parsed.protocol === 'https:' ? keepAliveHttpsAgent : keepAliveHttpAgent,
+    lookup: validatedTarget.lookup,
     headers: forward
   }, async (proxyRes) => {
     if (res.writableEnded) {
@@ -2200,6 +2201,75 @@ function readBoundedBody(req, res, maxBytes = DEFAULT_MAX_BODY_BYTES) {
   });
 }
 
+function negotiateEncoding(acceptEncodingHeader, availableEncodings) {
+  if (acceptEncodingHeader === undefined || acceptEncodingHeader === null) {
+    return availableEncodings.includes('identity') ? 'identity' : availableEncodings[0] || null;
+  }
+
+  const raw = String(acceptEncodingHeader).trim();
+  if (!raw) {
+    return availableEncodings.includes('identity') ? 'identity' : availableEncodings[0] || null;
+  }
+
+  const parsed = new Map();
+  const items = raw.split(',');
+
+  for (const item of items) {
+    const parts = item.split(';');
+    const coding = parts[0].trim().toLowerCase();
+    if (!coding) continue;
+
+    let q = 1;
+    let valid = true;
+
+    for (let i = 1; i < parts.length; i++) {
+      const param = parts[i].trim();
+      if (!param) continue;
+      const eqIdx = param.indexOf('=');
+      if (eqIdx === -1) continue;
+      const key = param.slice(0, eqIdx).trim().toLowerCase();
+      const val = param.slice(eqIdx + 1).trim();
+      if (key === 'q') {
+        const num = Number(val);
+        if (!val || !Number.isFinite(num) || num < 0 || num > 1) {
+          valid = false;
+          break;
+        }
+        q = num;
+      }
+    }
+
+    if (!valid) continue;
+    parsed.set(coding, q);
+  }
+
+  const wildcardQ = parsed.has('*') ? parsed.get('*') : null;
+  let bestEncoding = null;
+  let bestQ = 0;
+
+  for (const encoding of availableEncodings) {
+    let q;
+    if (parsed.has(encoding)) {
+      q = parsed.get(encoding);
+    } else if (wildcardQ !== null) {
+      q = wildcardQ;
+    } else if (encoding === 'identity') {
+      q = 0.0001;
+    } else {
+      q = 0;
+    }
+
+    if (q <= 0) continue;
+
+    if (q > bestQ) {
+      bestQ = q;
+      bestEncoding = encoding;
+    }
+  }
+
+  return bestEncoding;
+}
+
 const server = http.createServer(async (req, res) => {
   const reqUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = reqUrl.pathname;
@@ -2275,6 +2345,15 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+function serializeJsonForHtmlScript(value) {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
   // Short URL direct visit: /s/:code (7 characters)
   const shortMatch = pathname.match(/^\/s\/([a-zA-Z0-9]{7})\/?$/);
   if (shortMatch) {
@@ -2288,7 +2367,7 @@ const server = http.createServer(async (req, res) => {
           res.end('Server Error');
           return;
         }
-        const injection = `<script>window.__PRELOADED_TRACK__ = ${JSON.stringify(track)};</script>`;
+        const injection = `<script>window.__PRELOADED_TRACK__ = ${serializeJsonForHtmlScript(track)};</script>`;
         const modifiedHtml = html.replace('<head>', `<head>\n  ${injection}`);
         res.writeHead(200, { 'Content-Type': 'text/html; charset=UTF-8', 'Cache-Control': 'no-cache' });
         res.end(modifiedHtml);
@@ -3044,7 +3123,20 @@ const server = http.createServer(async (req, res) => {
       }
 
       const compressible = ext === '.html' || ext === '.js' || ext === '.css' || ext === '.json' || ext === '.svg';
-      const acceptEncoding = String(req.headers['accept-encoding'] || '');
+      const chosenEncoding = negotiateEncoding(
+        req.headers['accept-encoding'],
+        compressible ? ['br', 'gzip', 'identity'] : ['identity']
+      );
+
+      if (!chosenEncoding) {
+        res.writeHead(406, {
+          'Content-Type': 'text/plain; charset=UTF-8',
+          'Vary': 'Accept-Encoding'
+        });
+        res.end('Not Acceptable');
+        return;
+      }
+
       const headers = {
         'Content-Type': contentType,
         'Cache-Control': cacheControl,
@@ -3060,11 +3152,11 @@ const server = http.createServer(async (req, res) => {
         res.end('Internal Server Error');
       });
 
-      if (compressible && /\bbr\b/i.test(acceptEncoding)) {
+      if (chosenEncoding === 'br') {
         headers['Content-Encoding'] = 'br';
         res.writeHead(200, headers);
         stream.pipe(zlib.createBrotliCompress()).pipe(res);
-      } else if (compressible && /\bgzip\b/i.test(acceptEncoding)) {
+      } else if (chosenEncoding === 'gzip') {
         headers['Content-Encoding'] = 'gzip';
         res.writeHead(200, headers);
         stream.pipe(zlib.createGzip()).pipe(res);
