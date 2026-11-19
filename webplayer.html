@@ -1071,10 +1071,12 @@
       let streamUrl = track.streamUrl || track.stream || '';
       if (!streamUrl && track.id) {
         try {
-          const res = await fetch(`/api/stream?id=${encodeURIComponent(track.id)}`);
-          const data = await res.json();
-          if (data && data.streamUrl) {
-            streamUrl = data.streamUrl;
+          const res = await fetch(`/api/stream-info?id=${encodeURIComponent(track.id)}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data && data.streamUrl) {
+              streamUrl = data.streamUrl;
+            }
           }
         } catch (_) {}
       }
@@ -1083,15 +1085,18 @@
         const ytId = extractYouTubeId(track.url);
         if (ytId) {
           try {
-            const res = await fetch(`/api/stream?id=${encodeURIComponent(ytId)}`);
-            const data = await res.json();
-            if (data && data.streamUrl) streamUrl = data.streamUrl;
+            const res = await fetch(`/api/stream-info?id=${encodeURIComponent(ytId)}`);
+            if (res.ok) {
+              const data = await res.json();
+              if (data && data.streamUrl) streamUrl = data.streamUrl;
+            }
           } catch (_) {}
         }
       }
 
       if (!streamUrl) {
         // Fallback to preview or alert
+        setPlayState(false);
         alert('Bu parçanın akış bağlantısı alınamadı.');
         return;
       }
@@ -1102,6 +1107,10 @@
         setPlayState(true);
       } catch (err) {
         console.warn('Playback error:', err);
+        setPlayState(false);
+        if (err && err.name !== 'AbortError') {
+          alert('Ses oynatılamadı: ' + (err.message || 'Bilinmeyen hata'));
+        }
       }
     }
 
@@ -1126,11 +1135,16 @@
 
     // Play/Pause button
     const btnPlayPause = document.getElementById('btn-play-pause');
-    btnPlayPause.addEventListener('click', () => {
+    btnPlayPause.addEventListener('click', async () => {
       if (!audio.src) return;
       if (audio.paused) {
-        audio.play();
-        setPlayState(true);
+        try {
+          await audio.play();
+          setPlayState(true);
+        } catch (err) {
+          console.warn('Playback error:', err);
+          setPlayState(false);
+        }
       } else {
         audio.pause();
         setPlayState(false);
@@ -1175,10 +1189,19 @@
     audio.addEventListener('ended', () => {
       if (state.isRepeat) {
         audio.currentTime = 0;
-        audio.play();
+        audio.play().catch((err) => {
+          console.warn('Repeat playback error:', err);
+          setPlayState(false);
+        });
       } else {
         document.getElementById('btn-next').click();
       }
+    });
+
+    audio.addEventListener('error', () => {
+      const mediaErr = audio.error;
+      console.warn('Audio media error:', mediaErr ? mediaErr.code : 'unknown', mediaErr ? mediaErr.message : '');
+      setPlayState(false);
     });
 
     // Volume
