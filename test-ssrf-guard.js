@@ -48,12 +48,20 @@ function createMockReq(method = 'GET', headers = {}) {
 }
 
 test('isPublicIp accepts public IPv4 and IPv6 addresses', () => {
-  assert.equal(isPublicIp('8.8.8.8'), true);
-  assert.equal(isPublicIp('1.1.1.1'), true);
-  assert.equal(isPublicIp('172.32.0.1'), true);
-  assert.equal(isPublicIp('192.169.0.1'), true);
-  assert.equal(isPublicIp('2606:4700:4700::1111'), true);
-  assert.equal(isPublicIp('2001:4860:4860::8888'), true);
+  const accepted = [
+    '8.8.8.8',
+    '1.1.1.1',
+    '172.32.0.1',
+    '192.169.0.1',
+    '2606:4700:4700::1111',
+    '2001:4860:4860::8888',
+    '2001:200::1',
+    '2a00:1450:4001:828::200e',
+    '3fff:1000::1'
+  ];
+  for (const ip of accepted) {
+    assert.equal(isPublicIp(ip), true, `Expected ${ip} to be accepted`);
+  }
 });
 
 test('isPublicIp rejects non-public IPv4 addresses', () => {
@@ -68,6 +76,7 @@ test('isPublicIp rejects non-public IPv4 addresses', () => {
     '172.31.255.254',
     '192.0.0.1',
     '192.0.2.1',
+    '192.88.99.1',
     '192.168.1.1',
     '198.18.0.1',
     '198.51.100.1',
@@ -85,10 +94,25 @@ test('isPublicIp rejects non-public IPv6 and IPv4-mapped IPv6 addresses', () => 
   const blockedV6 = [
     '::',
     '::1',
+    '64:ff9b::1',
+    '64:ff9b:1::1',
+    '100::1',
+    '2001::1',
+    '2001:2::1',
+    '2001:10::1',
+    '2001:20::1',
+    '2001:1ff:ffff::1',
+    '2001:db8::1',
+    '2002:7f00:0001::1',
+    '3fff::1',
+    '3fff:fff:ffff::1',
+    '4000::1',
+    '5f00::1',
     'fc00::1',
     'fd12:3456:789a::1',
     'fe80::1',
     'fe80::1%eth0',
+    'fec0::1',
     'ff02::1',
     '::ffff:127.0.0.1',
     '::ffff:10.0.0.1',

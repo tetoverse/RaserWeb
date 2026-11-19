@@ -25,6 +25,7 @@ function isPublicIpv4Octets([a, b, c]) {
   if (a === 172 && b >= 16 && b <= 31) return false;      // 172.16.0.0/12 (private)
   if (a === 192 && b === 0 && c === 0) return false;      // 192.0.0.0/24 (IETF protocol)
   if (a === 192 && b === 0 && c === 2) return false;      // 192.0.2.0/24 (TEST-NET-1)
+  if (a === 192 && b === 88 && c === 99) return false;    // 192.88.99.0/24 (6to4 relay anycast)
   if (a === 192 && b === 168) return false;               // 192.168.0.0/16 (private)
   if (a === 198 && (b === 18 || b === 19)) return false;  // 198.18.0.0/15 (benchmarking)
   if (a === 198 && b === 51 && c === 100) return false;   // 198.51.100.0/24 (TEST-NET-2)
@@ -88,31 +89,23 @@ function isPublicIp(ip) {
     const g = parseIpv6(trimmed);
     if (!g) return false;
 
-    // ::/128 (unspecified) and ::1/128 (loopback)
-    const isAllZeroPrefix = g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0;
-    if (isAllZeroPrefix && g[6] === 0 && (g[7] === 0 || g[7] === 1)) return false;
+    // Require global unicast space (2000::/3).
+    // This rejects ::/128, ::1/128, ::ffff:0:0/96 (IPv4-mapped), ::/96 (IPv4-compatible),
+    // 64:ff9b::/96 & 64:ff9b:1::/48 (NAT64), 100::/64 (discard), fc00::/7 (ULA),
+    // fe80::/10 (link-local), fec0::/10 (site-local), ff00::/8 (multicast), etc.
+    if ((g[0] & 0xe000) !== 0x2000) return false;
 
-    // ::ffff:0:0/96 (IPv4-mapped IPv6) and ::/96 (IPv4-compatible)
-    if (isAllZeroPrefix && (g[5] === 0 || g[5] === 0xffff)) return false;
-    if (g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0xffff) return false;
-
-    // 64:ff9b::/96 (NAT64)
-    if (g[0] === 0x0064 && g[1] === 0xff9b && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0) return false;
-
-    // 100::/64 (discard-only)
-    if (g[0] === 0x0100 && g[1] === 0 && g[2] === 0 && g[3] === 0) return false;
+    // 2001::/23 (IETF protocol assignments: Teredo, benchmarking, ORCHID/ORCHIDv2, etc.)
+    if (g[0] === 0x2001 && (g[1] & 0xfe00) === 0x0000) return false;
 
     // 2001:db8::/32 (documentation)
     if (g[0] === 0x2001 && g[1] === 0x0db8) return false;
 
-    // fc00::/7 (unique local / private)
-    if ((g[0] & 0xfe00) === 0xfc00) return false;
+    // 2002::/16 (6to4)
+    if (g[0] === 0x2002) return false;
 
-    // fe80::/10 (link-local) and fec0::/10 (site-local)
-    if ((g[0] & 0xffc0) === 0xfe80 || (g[0] & 0xffc0) === 0xfec0) return false;
-
-    // ff00::/8 (multicast)
-    if ((g[0] & 0xff00) === 0xff00) return false;
+    // 3fff::/20 (documentation, RFC 9637)
+    if (g[0] === 0x3fff && (g[1] & 0xf000) === 0x0000) return false;
 
     return true;
   }
