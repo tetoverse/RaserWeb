@@ -1,13 +1,28 @@
 // Raser Native - Tauri v2 IPC Bridge
 (function initTauriBridge() {
-  const invoke = (cmd, args) => {
+  if (typeof window === 'undefined') return;
+
+  const resolveTauriInvoke = () => {
     if (window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.invoke === 'function') {
-      return window.__TAURI__.core.invoke(cmd, args);
+      return (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
+    }
+    if (window.__TAURI__ && typeof window.__TAURI__.invoke === 'function') {
+      return (cmd, args) => window.__TAURI__.invoke(cmd, args);
     }
     if (window.__TAURI_INTERNALS__ && typeof window.__TAURI_INTERNALS__.invoke === 'function') {
-      return window.__TAURI_INTERNALS__.invoke(cmd, args);
+      return (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);
     }
-    return Promise.resolve();
+    return null;
+  };
+
+  // Only activate the Rust/Tauri bridge when an actual Tauri runtime is present.
+  if (!resolveTauriInvoke()) {
+    return;
+  }
+
+  const invoke = (cmd, args) => {
+    const tauriInvoke = resolveTauriInvoke();
+    return tauriInvoke ? tauriInvoke(cmd, args) : Promise.resolve();
   };
 
   const mediaCommandListeners = [];
