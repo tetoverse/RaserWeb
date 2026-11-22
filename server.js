@@ -667,6 +667,7 @@ async function resolveAudioStreamDetails(target, platform = '', queryFallback = 
           itag: cached.itag || 140,
           mimeType: cached.mimeType || 'audio/mp4',
           contentLength: cached.contentLength,
+          duration: cached.duration,
           isFull: !!cached.fullUrl,
           resolvedId: targetId || (isDirectId ? cleanTarget : (cached.resolvedId || null))
         };
@@ -699,6 +700,7 @@ async function resolveAudioStreamDetails(target, platform = '', queryFallback = 
             itag: streamDetails.itag,
             mimeType: streamDetails.mimeType,
             contentLength: streamDetails.contentLength,
+            duration: streamDetails.duration || existing.duration,
             resolvedId: targetId
           });
           if (cacheKey !== targetId) {
@@ -812,13 +814,18 @@ async function streamHlsAudio(req, res, playlistUrl, options = {}) {
       const isMp3 = playlistUrl.includes('.mp3') || (segmentUrls[0] && segmentUrls[0].includes('.mp3'));
       const contentType = isMp3 ? 'audio/mpeg' : 'audio/mp4';
 
-      res.writeHead(200, {
+      const hlsHeaders = {
         'Content-Type': contentType,
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Headers': '*',
+        'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, X-Audio-Duration',
         'Cache-Control': 'public, max-age=86400',
         'X-Accel-Buffering': 'no'
-      });
+      };
+      if (options.duration && Number.isFinite(options.duration) && options.duration > 0) {
+        hlsHeaders['X-Audio-Duration'] = String(options.duration);
+      }
+      res.writeHead(200, hlsHeaders);
       if (typeof res.flushHeaders === 'function') res.flushHeaders();
 
       for (let i = 0; i < segmentUrls.length; i++) {
@@ -1105,7 +1112,10 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, options 
     delete outHeaders['x-frame-options'];
     outHeaders['Access-Control-Allow-Origin'] = '*';
     outHeaders['Access-Control-Allow-Headers'] = '*';
-    outHeaders['Access-Control-Expose-Headers'] = 'Content-Length, Content-Range, Accept-Ranges';
+    outHeaders['Access-Control-Expose-Headers'] = 'Content-Length, Content-Range, Accept-Ranges, X-Audio-Duration';
+    if (options.duration && Number.isFinite(options.duration) && options.duration > 0) {
+      outHeaders['X-Audio-Duration'] = String(options.duration);
+    }
     outHeaders['X-Accel-Buffering'] = 'no';
     outHeaders['Accept-Ranges'] = 'bytes';
 
@@ -2743,11 +2753,15 @@ function serializeJsonForHtmlScript(value) {
       // Direct audio streaming pipeline straight into HTTP response
       const determinedMime = streamDetails.mimeType ? streamDetails.mimeType.split(';')[0].trim() : (streamDetails.itag === 251 ? 'audio/webm' : 'audio/mp4');
       const totalLen = streamDetails.contentLength ? parseInt(streamDetails.contentLength, 10) : null;
+      const exactDuration = (streamDetails.duration && Number.isFinite(streamDetails.duration) && streamDetails.duration > 0)
+        ? streamDetails.duration
+        : (targetDuration > 0 ? targetDuration : undefined);
       return handleAudioProxy(req, res, rawStreamUrl, 5, {
         isStreamEndpoint: true,
         contentType: determinedMime,
         targetId: streamDetails.resolvedId || target,
-        seamlessTotalLength: totalLen
+        seamlessTotalLength: totalLen,
+        duration: exactDuration
       });
     } catch (err) {
       if (reqUrl.searchParams.get('format') === 'json') {
