@@ -1441,11 +1441,12 @@ async function handleI18nBatch(texts, targetLang) {
 
 function parseYtmDuration(s) {
   if (!s || typeof s !== 'string') return 0;
-  const parts = s.split(':').map(Number);
-  if (parts.some(isNaN)) return 0;
-  if (parts.length === 2) return parts[0] * 60 + parts[1];
-  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  return 0;
+  const m = s.trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!m) return 0;
+  if (m[3] !== undefined) {
+    return parseInt(m[1], 10) * 3600 + parseInt(m[2], 10) * 60 + parseInt(m[3], 10);
+  }
+  return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
 }
 
 function parseYtmViewsOrPlays(text) {
@@ -1529,7 +1530,7 @@ function parseYtmSongs(json) {
           title,
           artist: artist.replace(/\s*-\s*Topic$/i, '').trim(),
           album: '',
-          duration: duration || 180,
+          duration: duration || 0,
           isSong: isCardSong,
           isVideo: isCardVideo,
           thumbnail,
@@ -1586,11 +1587,39 @@ function parseYtmSongs(json) {
       const clean = segments.filter((s) => s && !/^(song|şarkı|video)$/i.test(s));
 
       let duration = 0;
-      if (clean.length && parseYtmDuration(clean[clean.length - 1])) {
-        duration = parseYtmDuration(clean.pop());
+      for (let idx = clean.length - 1; idx >= 0; idx--) {
+        const parsedDur = parseYtmDuration(clean[idx]);
+        if (parsedDur > 0) {
+          duration = parsedDur;
+          clean.splice(idx, 1);
+          break;
+        }
       }
-      let artist = (clean[0] || shelfArtistFallback || 'Unknown Artist').replace(/\s*-\s*Topic$/i, '').trim();
-      const album = clean[1] || '';
+      if (!duration && Array.isArray(r.fixedColumns)) {
+        for (const fc of r.fixedColumns) {
+          const fcRuns = fc?.musicResponsiveListItemFixedColumnRenderer?.text?.runs || [];
+          const fcText = fcRuns.map(x => x.text).join('').trim();
+          const parsedDur = parseYtmDuration(fcText);
+          if (parsedDur > 0) {
+            duration = parsedDur;
+            break;
+          }
+        }
+      }
+      if (!duration && cols.length > 2) {
+        for (let ci = 2; ci < cols.length; ci++) {
+          const cText = runsOf(ci).map(x => x.text).join('').trim();
+          const parsedDur = parseYtmDuration(cText);
+          if (parsedDur > 0) {
+            duration = parsedDur;
+            break;
+          }
+        }
+      }
+
+      const metaClean = clean.filter((s) => !/(?:görüntüleme|dinlenme|views|plays)/i.test(s));
+      let artist = (metaClean[0] || shelfArtistFallback || 'Unknown Artist').replace(/\s*-\s*Topic$/i, '').trim();
+      const album = metaClean[1] || '';
 
       const thumbs = (r.thumbnail && r.thumbnail.musicThumbnailRenderer && r.thumbnail.musicThumbnailRenderer.thumbnail && r.thumbnail.musicThumbnailRenderer.thumbnail.thumbnails) || [];
       let thumbnail = thumbs.length ? thumbs[thumbs.length - 1].url : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
@@ -1602,7 +1631,7 @@ function parseYtmSongs(json) {
         title,
         artist: artist || 'Unknown Artist',
         album,
-        duration: duration || 180,
+        duration: duration || 0,
         isSong: isRowSong || !isRowVideo,
         isVideo: isRowVideo,
         thumbnail,
@@ -1963,7 +1992,8 @@ async function searchSoundcloud(query, limit = 14) {
 
 function formatTrack(t) {
   if (!t) return null;
-  const d = Math.max(1, parseInt(t.duration, 10) || 180);
+  const rawD = parseInt(t.duration, 10);
+  const d = Number.isFinite(rawD) && rawD > 0 ? rawD : 0;
   const m = Math.floor(d / 60);
   const s = d % 60;
   return {
@@ -1972,7 +2002,7 @@ function formatTrack(t) {
     artist: t.artist || 'Unknown Artist',
     album: t.album || '',
     duration: d,
-    durationFormatted: `${m}:${s < 10 ? '0' : ''}${s}`,
+    durationFormatted: d > 0 ? `${m}:${s < 10 ? '0' : ''}${s}` : '',
     thumbnail: t.thumbnail || `https://i.ytimg.com/vi/${t.id}/hqdefault.jpg`,
     url: t.url || `https://www.youtube.com/watch?v=${t.id}`,
     platform: t.platform || 'ytmusic',
