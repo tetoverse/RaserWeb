@@ -2965,6 +2965,7 @@ function serializeJsonForHtmlScript(value) {
         const parsed = JSON.parse(body || '{}');
         const tracks = Array.isArray(parsed.tracks) ? parsed.tracks.slice(0, 25) : [];
         const durations = {};
+        const resolvedTracks = {};
         const concurrency = 5;
         for (let i = 0; i < tracks.length; i += concurrency) {
           const chunk = tracks.slice(i, i + concurrency);
@@ -2975,14 +2976,18 @@ function serializeJsonForHtmlScript(value) {
             try {
               const resSongs = await searchYouTubeMusic(q);
               const best = pickBestSearchResult(resSongs, q, 0);
-              if (best && Number.isFinite(best.duration) && best.duration > 10 && best.duration !== 180) {
-                durations[String(t.key)] = Math.round(best.duration);
+              if (best && best.id) {
+                const dur = (Number.isFinite(best.duration) && best.duration > 10 && best.duration !== 180)
+                  ? Math.round(best.duration)
+                  : 0;
+                if (dur > 0) durations[String(t.key)] = dur;
+                resolvedTracks[String(t.key)] = { id: best.id, duration: dur };
               }
             } catch (_) {}
           }));
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify({ success: true, durations }));
+        return res.end(JSON.stringify({ success: true, durations, tracks: resolvedTracks }));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({ success: false, error: 'Invalid JSON' }));
