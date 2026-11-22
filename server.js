@@ -79,7 +79,8 @@ function pickBestSearchResultWithMeta(results, queryTitle = '', targetDuration =
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
     if (!r || !r.id) continue;
-    let score = 100 - i * 4;
+    const rankIdx = typeof r._rank === 'number' ? r._rank : i;
+    let score = 100 - Math.min(rankIdx, 12) * 3;
     const rTitle = String(r.title || '').toLowerCase();
     const rArtist = String(r.artist || '').toLowerCase();
     const rCombined = `${rTitle} ${rArtist}`;
@@ -87,20 +88,26 @@ function pickBestSearchResultWithMeta(results, queryTitle = '', targetDuration =
 
     // Strong penalty for unwanted remix / live / cover / slowed / concert variants,
     // and strong bonus when the user explicitly asked for that variant
+    const wantsSlowedOrReverb = wantedVariants.includes('slowed') || wantedVariants.includes('reverb');
     for (const w of variantWords) {
       const escaped = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const re = new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?:$|[^\\p{L}\\p{N}])`, 'u');
       const hasVariant = re.test(rTitle) || (w !== 'live' && w !== 'tour' && re.test(rArtist));
       if (wantedVariants.includes(w)) {
-        if (hasVariant) score += 160;
+        if (hasVariant) score += 140;
       } else if (hasVariant) {
-        score -= 260;
+        // slowed & reverb frequently co-occur when user explicitly requests one of them
+        if (wantsSlowedOrReverb && (w === 'slowed' || w === 'reverb')) {
+          score -= 25;
+        } else {
+          score -= 260;
+        }
       }
     }
 
-    // Prefer official studio Songs over Videos
-    if (r.isSong) score += 75;
-    else if (r.isVideo) score -= 35;
+    // Prefer official studio Songs over Videos (moderate tie-breaker, never overrides exact title match)
+    if (r.isSong) score += 55;
+    else if (r.isVideo) score -= 20;
     if (/\bofficial audio\b|\bprovided to youtube\b/i.test(rCombined)) score += 30;
     if (/\bofficial (music )?video\b|\blyrics?\b|\bvisualizer\b/i.test(rTitle) && !qLower.includes('video')) {
       score -= 15;
@@ -114,8 +121,8 @@ function pickBestSearchResultWithMeta(results, queryTitle = '', targetDuration =
         if (rLooseStr.includes(tok)) matched++;
       }
       titleRatio = matched / titleTokens.length;
-      score += Math.round(titleRatio * 140);
-      if (titleRatio < 0.5) score -= 180;
+      score += Math.round(titleRatio * 240);
+      if (titleRatio < 0.5) score -= 260;
     }
 
     // Artist token match (prevents wrong artist cover / same-title song from winning)
@@ -181,12 +188,18 @@ async function resolveBestTrackAcrossSources(query, targetDuration = 0) {
 
   const merged = [];
   const seen = new Set();
-  for (const r of [...(ytmResults || []), ...(webResults || [])]) {
+  (ytmResults || []).forEach((r, idx) => {
     if (r && r.id && !seen.has(r.id)) {
       seen.add(r.id);
-      merged.push(r);
+      merged.push({ ...r, _rank: idx });
     }
-  }
+  });
+  (webResults || []).forEach((r, idx) => {
+    if (r && r.id && !seen.has(r.id)) {
+      seen.add(r.id);
+      merged.push({ ...r, _rank: idx });
+    }
+  });
   const combinedMeta = pickBestSearchResultWithMeta(merged, cleanQ, targetDuration);
   return combinedMeta ? combinedMeta.track : (ytmMeta ? ytmMeta.track : null);
 }
