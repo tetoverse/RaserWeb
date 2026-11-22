@@ -213,7 +213,7 @@ function normalizeTrackKey(str) {
   return str.toLowerCase().replace(/[\(\[\{].*?[\)\]\}]/g, '').replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
 }
 
-const STREAM_CACHE_FILE = path.join(__dirname, 'data', 'stream_cache.json');
+const STREAM_CACHE_FILE = path.join(__dirname, 'data', 'stream_cache_v2.json');
 const ID_MAP_CACHE_FILE = path.join(__dirname, 'data', 'resolved_ids_v3.json');
 
 function loadStreamCacheFromDisk() {
@@ -1715,7 +1715,7 @@ function parseYtmSongs(json) {
   return out;
 }
 
-function searchYouTubeMusic(query, retryWithoutParams = true) {
+function searchYouTubeMusic(query, songsOnly = true, retryWithoutParams = true) {
   return new Promise((resolve, reject) => {
     const postPayload = (withParams) => {
       const payloadObj = {
@@ -1795,8 +1795,7 @@ function searchYouTubeMusic(query, retryWithoutParams = true) {
       req.end();
     };
 
-    // Always try YouTube Music "Songs" filter first so studio tracks win over live/remix videos
-    runSearch(true);
+    runSearch(!!songsOnly);
   });
 }
 
@@ -2621,37 +2620,47 @@ function serializeJsonForHtmlScript(value) {
     };
 
     try {
-      const [ytmRes, webRes] = await Promise.all([
-        searchYouTubeMusic(q).catch(() => []),
-        searchYouTubeInnertubeWeb(q).catch(() => [])
+      const [ytmSongs, ytmAll] = await Promise.all([
+        searchYouTubeMusic(q, true, false).catch(() => []),
+        searchYouTubeMusic(q, false, false).catch(() => [])
       ]);
       const merged = [];
       const seen = new Set();
-      for (const item of [...(ytmRes || []), ...(webRes || [])]) {
+      // Preserve YouTube Music's own relevance order first (unfiltered Top Hit + Songs)
+      for (const item of [...(ytmAll || []), ...(ytmSongs || [])]) {
         if (item && item.id && !seen.has(item.id)) {
           seen.add(item.id);
           merged.push(item);
         }
       }
-      // Boost tracks whose title+artist actually match ALL/most query words (so mashups/YT uploads like "2Pac, Pop Smoke - Write This Down" surface alongside official YTM Songs)
+
+      // Check if YTM already has a strong match containing most query tokens
       const qTokens = tokenizeLoose(q);
-      if (qTokens.length > 0 && merged.length > 1) {
-        merged.sort((a, b) => {
-          const scoreItem = (it) => {
-            const hay = tokenizeLoose(`${it.title || ''} ${it.artist || ''}`).join(' ');
-            let hits = 0;
-            for (const tok of qTokens) {
-              if (hay.includes(tok)) hits++;
-            }
-            const ratio = hits / qTokens.length;
-            let s = ratio * 200;
-            if (it.isSong) s += 25;
-            if (ratio === 1) s += 40;
-            return s;
-          };
-          return scoreItem(b) - scoreItem(a);
-        });
+      const hasStrongYtmMatch = qTokens.length > 0 && merged.some((it) => {
+        const hay = tokenizeLoose(`${it.title || ''} ${it.artist || ''}`).join(' ');
+        const hits = qTokens.filter(tok => hay.includes(tok)).length;
+        return hits / qTokens.length >= 0.75;
+      });
+
+      // Only pull YouTube Web results when YTM didn't find a strong match (e.g. YouTube-only mashups/uploads)
+      if (!hasStrongYtmMatch) {
+        const webRes = await searchYouTubeInnertubeWeb(q).catch(() => []);
+        const webHits = [];
+        for (const item of (webRes || [])) {
+          if (!item || !item.id || seen.has(item.id)) continue;
+          if (item.duration > 900) continue; // skip 15+ min spam mixes
+          const hay = tokenizeLoose(`${item.title || ''} ${item.artist || ''}`).join(' ');
+          const hits = qTokens.length ? qTokens.filter(tok => hay.includes(tok)).length : 0;
+          if (qTokens.length === 0 || hits / qTokens.length >= 0.6) {
+            seen.add(item.id);
+            webHits.push({ item, ratio: qTokens.length ? hits / qTokens.length : 0 });
+          }
+        }
+        webHits.sort((a, b) => b.ratio - a.ratio);
+        // Place exact YouTube Web hits at the top, followed by YTM results
+        merged.unshift(...webHits.map(w => w.item));
       }
+
       let results = merged;
       if (!results || results.length === 0) {
         results = await searchITunes(q);
