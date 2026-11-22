@@ -2621,7 +2621,38 @@ function serializeJsonForHtmlScript(value) {
     };
 
     try {
-      let results = await searchYouTubeMusic(q);
+      const [ytmRes, webRes] = await Promise.all([
+        searchYouTubeMusic(q).catch(() => []),
+        searchYouTubeInnertubeWeb(q).catch(() => [])
+      ]);
+      const merged = [];
+      const seen = new Set();
+      for (const item of [...(ytmRes || []), ...(webRes || [])]) {
+        if (item && item.id && !seen.has(item.id)) {
+          seen.add(item.id);
+          merged.push(item);
+        }
+      }
+      // Boost tracks whose title+artist actually match ALL/most query words (so mashups/YT uploads like "2Pac, Pop Smoke - Write This Down" surface alongside official YTM Songs)
+      const qTokens = tokenizeLoose(q);
+      if (qTokens.length > 0 && merged.length > 1) {
+        merged.sort((a, b) => {
+          const scoreItem = (it) => {
+            const hay = tokenizeLoose(`${it.title || ''} ${it.artist || ''}`).join(' ');
+            let hits = 0;
+            for (const tok of qTokens) {
+              if (hay.includes(tok)) hits++;
+            }
+            const ratio = hits / qTokens.length;
+            let s = ratio * 200;
+            if (it.isSong) s += 25;
+            if (ratio === 1) s += 40;
+            return s;
+          };
+          return scoreItem(b) - scoreItem(a);
+        });
+      }
+      let results = merged;
       if (!results || results.length === 0) {
         results = await searchITunes(q);
       }
@@ -2754,14 +2785,20 @@ function serializeJsonForHtmlScript(value) {
         ]);
 
         const dzArtist = dzData && Array.isArray(dzData.data) && dzData.data[0] ? dzData.data[0] : null;
+        const normQuery = normalizeTrackKey(cleanName);
+        const normDz = dzArtist && dzArtist.name ? normalizeTrackKey(dzArtist.name) : '';
+        const artistNameMatchesQuery = !!(normDz && normQuery && (
+          normDz === normQuery ||
+          normQuery.split(' ').length <= 3 && (normDz.includes(normQuery) || normQuery.includes(normDz))
+        ));
         const formattedTracks = (Array.isArray(ytmRaw) ? ytmRaw : []).map(formatTrack).filter(Boolean);
 
-        const avatar = (dzArtist && (dzArtist.picture_xl || dzArtist.picture_big || dzArtist.picture_medium))
+        const avatar = (dzArtist && artistNameMatchesQuery && (dzArtist.picture_xl || dzArtist.picture_big || dzArtist.picture_medium))
           || (formattedTracks[0] && formattedTracks[0].thumbnail)
           || '';
-        const artistName = (dzArtist && dzArtist.name) || cleanName;
-        const fans = (dzArtist && typeof dzArtist.nb_fan === 'number') ? dzArtist.nb_fan : 0;
-        const isKnownArtist = !!(dzArtist || formattedTracks.length > 0);
+        const artistName = (dzArtist && artistNameMatchesQuery && dzArtist.name) || cleanName;
+        const fans = (dzArtist && artistNameMatchesQuery && typeof dzArtist.nb_fan === 'number') ? dzArtist.nb_fan : 0;
+        const isKnownArtist = !!(dzArtist && artistNameMatchesQuery);
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
