@@ -36,8 +36,18 @@ function pickBestSearchResult(results, queryTitle = '', targetDuration = 0) {
   if (!Array.isArray(results) || results.length === 0) return null;
   const qLower = String(queryTitle || '').toLowerCase();
   const dur = Number(targetDuration) || 0;
-  const variantWords = ['remix', 'cover', 'slowed', 'reverb', 'sped up', 'nightcore', 'live', 'karaoke', 'instrumental', 'acoustic', '8d'];
+  const variantWords = [
+    'remix', 'cover', 'slowed', 'reverb', 'sped up', 'speed up', 'nightcore',
+    'live', 'canlı', 'canli', 'konser', 'concert', 'karaoke', 'instrumental',
+    'enstrümantal', 'acoustic', 'akustik', 'unplugged', '8d', 'mashup',
+    'bootleg', 'bass boosted', 'tiktok', 'reaction', 'rehearsal', 'session',
+    'festival', 'tour', '1 hour', '10 hours', 'pitched', 'loop', 'extended',
+    'parody', 'parodi', 'tribute', 'club mix', 'freestyle', 'karaoke'
+  ];
   const wantedVariants = variantWords.filter(w => qLower.includes(w));
+  const queryTokens = normalizeTrackKey(queryTitle)
+    .split(' ')
+    .filter(t => t.length >= 2);
 
   let best = results[0];
   let bestScore = -Infinity;
@@ -45,21 +55,54 @@ function pickBestSearchResult(results, queryTitle = '', targetDuration = 0) {
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
     if (!r || !r.id) continue;
-    let score = 100 - i * 3; // slight preference for higher search rank
+    let score = 100 - i * 4;
     const rTitle = String(r.title || '').toLowerCase();
+    const rArtist = String(r.artist || '').toLowerCase();
+    const rCombined = `${rTitle} ${rArtist}`;
 
+    // Strong penalty for unwanted remix / live / cover / slowed / concert variants,
+    // and strong bonus when the user explicitly asked for that variant
     for (const w of variantWords) {
-      if (rTitle.includes(w) && !wantedVariants.includes(w)) {
-        score -= 60;
+      const escaped = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?:$|[^\\p{L}\\p{N}])`, 'u');
+      const hasVariant = re.test(rTitle) || (w !== 'live' && w !== 'tour' && re.test(rArtist));
+      if (wantedVariants.includes(w)) {
+        if (hasVariant) score += 140;
+      } else if (hasVariant) {
+        score -= 250;
       }
     }
 
+    // Prefer official studio Songs over Videos
+    if (r.isSong) score += 90;
+    else if (r.isVideo) score -= 45;
+    if (/\bofficial audio\b|\bprovided to youtube\b/i.test(rCombined)) score += 35;
+    if (/\bofficial (music )?video\b|\blyrics?\b|\bvisualizer\b/i.test(rTitle) && !qLower.includes('video')) {
+      score -= 20;
+    }
+
+    // Token match against requested artist + title
+    if (queryTokens.length > 0 && rCombined.trim().length > 0) {
+      const rNorm = normalizeTrackKey(rCombined);
+      let matched = 0;
+      for (const tok of queryTokens) {
+        if (rNorm.includes(tok)) matched++;
+      }
+      const ratio = matched / queryTokens.length;
+      score += Math.round(ratio * 120);
+      if (ratio < 0.35) score -= 120;
+    }
+
+    // Duration match (rejects full concerts, 1-hour loops, or wrong edits)
     if (dur > 10 && r.duration > 10) {
       const diff = Math.abs(r.duration - dur);
-      if (diff <= 5) score += 80;
-      else if (diff <= 15) score += 50;
+      if (diff <= 5) score += 75;
+      else if (diff <= 15) score += 45;
       else if (diff <= 30) score += 10;
-      else score -= Math.min(120, diff);
+      else score -= Math.min(180, diff * 1.5);
+    } else if (r.duration > 900 && dur <= 0) {
+      // Without target duration, penalize >15 min mixes/concerts unless requested
+      score -= 120;
     }
 
     if (score > bestScore) {
@@ -76,7 +119,7 @@ function normalizeTrackKey(str) {
 }
 
 const STREAM_CACHE_FILE = path.join(__dirname, 'data', 'stream_cache.json');
-const ID_MAP_CACHE_FILE = path.join(__dirname, 'data', 'resolved_ids.json');
+const ID_MAP_CACHE_FILE = path.join(__dirname, 'data', 'resolved_ids_v2.json');
 
 function loadStreamCacheFromDisk() {
   try {
@@ -467,15 +510,17 @@ function resolveFullStreamViaYtDlp(targetId, cleanTarget = '', isUrl = false) {
       } else if (q) {
         try {
           const sRes = await searchYouTubeMusic(q);
-          if (Array.isArray(sRes) && sRes[0]?.id) {
-            resolvedVideoId = sRes[0].id;
+          const bestS = pickBestSearchResult(sRes, q);
+          if (bestS && bestS.id) {
+            resolvedVideoId = bestS.id;
             if (norm) idMapCache.set(norm, resolvedVideoId);
             if (cleanTarget) idMapCache.set(cleanTarget, resolvedVideoId);
             saveIdCacheToDisk();
           } else {
             const wRes = await searchYouTubeInnertubeWeb(q);
-            if (Array.isArray(wRes) && wRes[0]?.id) {
-              resolvedVideoId = wRes[0].id;
+            const bestW = pickBestSearchResult(wRes, q);
+            if (bestW && bestW.id) {
+              resolvedVideoId = bestW.id;
               if (norm) idMapCache.set(norm, resolvedVideoId);
               if (cleanTarget) idMapCache.set(cleanTarget, resolvedVideoId);
               saveIdCacheToDisk();
@@ -1461,6 +1506,8 @@ function parseYtmSongs(json) {
           }
         }
         segments.push(cur.join('').trim());
+        const isCardVideo = segments.some(s => /^video$/i.test(s));
+        const isCardSong = segments.some(s => /^(song|şarkı)$/i.test(s));
         const clean = segments.filter(s => s && !/^(song|şarkı|video)$/i.test(s));
 
         let duration = 0;
@@ -1483,6 +1530,8 @@ function parseYtmSongs(json) {
           artist: artist.replace(/\s*-\s*Topic$/i, '').trim(),
           album: '',
           duration: duration || 180,
+          isSong: isCardSong,
+          isVideo: isCardVideo,
           thumbnail,
           url: `https://www.youtube.com/watch?v=${videoId}`
         });
@@ -1532,6 +1581,8 @@ function parseYtmSongs(json) {
         if (run.text === ' • ') { segments.push(cur.join('').trim()); cur = []; } else cur.push(run.text);
       }
       segments.push(cur.join('').trim());
+      const isRowVideo = segments.some(s => /^video$/i.test(s));
+      const isRowSong = segments.some(s => /^(song|şarkı)$/i.test(s));
       const clean = segments.filter((s) => s && !/^(song|şarkı|video)$/i.test(s));
 
       let duration = 0;
@@ -1552,6 +1603,8 @@ function parseYtmSongs(json) {
         artist: artist || 'Unknown Artist',
         album,
         duration: duration || 180,
+        isSong: isRowSong || !isRowVideo,
+        isVideo: isRowVideo,
         thumbnail,
         url: `https://www.youtube.com/watch?v=${videoId}`
       });
@@ -1576,8 +1629,8 @@ function searchYouTubeMusic(query, retryWithoutParams = true) {
         query: query
       };
       if (withParams) {
-        // Param for songs filter with top hit precision
-        payloadObj.params = 'Eg-KAQwIABAAGAAgACgB';
+        // Official YouTube Music "Songs" filter param (excludes live videos, fan uploads, remixes)
+        payloadObj.params = 'EgWKAQIIAWoKEAMQBBAJEAoQBQ%3D%3D';
       }
       return JSON.stringify(payloadObj);
     };
@@ -1603,10 +1656,11 @@ function searchYouTubeMusic(query, retryWithoutParams = true) {
             const json = JSON.parse(data);
             const songs = parseYtmSongs(json);
             if (Array.isArray(songs) && songs.length > 0 && songs[0].id) {
-              const norm = normalizeTrackKey(query);
-              if (norm) {
-                idMapCache.set(norm, songs[0].id);
-                saveIdCacheToDisk();
+              if (withParams) {
+                for (const s of songs) {
+                  s.isSong = true;
+                  s.isVideo = false;
+                }
               }
               return resolve(songs);
             }
@@ -1640,8 +1694,8 @@ function searchYouTubeMusic(query, retryWithoutParams = true) {
       req.end();
     };
 
-    // First attempt with default search to reliably capture Top Result Hit Card, falling back if empty
-    runSearch(false);
+    // Always try YouTube Music "Songs" filter first so studio tracks win over live/remix videos
+    runSearch(true);
   });
 }
 
@@ -1676,16 +1730,34 @@ function searchYouTubeInnertubeWeb(query) {
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
         try {
-          const matches = [...data.matchAll(/"videoId":"([a-zA-Z0-9_-]{11})"/g)].map(m => m[1]);
-          const uniqueIds = [...new Set(matches)];
-          if (uniqueIds.length > 0) {
-            const norm = normalizeTrackKey(cleanQuery);
-            if (norm) {
-              idMapCache.set(norm, uniqueIds[0]);
-              saveIdCacheToDisk();
+          const json = JSON.parse(data);
+          const out = [];
+          const seen = new Set();
+          const sections = json?.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents || [];
+          for (const sec of sections) {
+            const items = sec?.itemSectionRenderer?.contents || [];
+            for (const item of items) {
+              const vr = item && item.videoRenderer;
+              if (!vr || !vr.videoId || !/^[a-zA-Z0-9_-]{11}$/.test(vr.videoId) || seen.has(vr.videoId)) continue;
+              const title = (vr.title?.runs?.map(r => r.text).join('') || vr.title?.simpleText || '').trim();
+              const artist = (vr.ownerText?.runs?.map(r => r.text).join('') || '').replace(/\s*-\s*Topic$/i, '').trim();
+              const durText = vr.lengthText?.simpleText || vr.lengthText?.runs?.map(r => r.text).join('') || '';
+              const duration = parseYtmDuration(durText) || 0;
+              seen.add(vr.videoId);
+              out.push({
+                id: vr.videoId,
+                title,
+                artist,
+                duration,
+                isSong: /\s-\sTopic$/i.test(vr.ownerText?.runs?.map(r => r.text).join('') || ''),
+                isVideo: true,
+                url: `https://www.youtube.com/watch?v=${vr.videoId}`
+              });
+              if (out.length >= 12) break;
             }
-            return resolve(uniqueIds.map(id => ({ id, url: `https://www.youtube.com/watch?v=${id}` })));
+            if (out.length >= 12) break;
           }
+          if (out.length > 0) return resolve(out);
         } catch (_) {}
         resolve([]);
       });
@@ -2885,7 +2957,12 @@ function serializeJsonForHtmlScript(value) {
         } else if (norm && idMapCache.has(norm)) {
           resolved[id || norm] = idMapCache.get(norm);
         } else if (title || artist) {
-          toSearch.push({ origId: id || norm, query: artist ? `${artist} ${title}` : title, norm });
+          toSearch.push({
+            origId: id || norm,
+            query: artist ? `${artist} - ${title}` : title,
+            duration: Number(t.duration) || 0,
+            norm
+          });
         }
       }
 
@@ -2896,8 +2973,9 @@ function serializeJsonForHtmlScript(value) {
           await Promise.all(chunk.map(async (item) => {
             try {
               const resSongs = await searchYouTubeMusic(item.query);
-              if (Array.isArray(resSongs) && resSongs.length > 0 && resSongs[0].id) {
-                const vid = resSongs[0].id;
+              const best = pickBestSearchResult(resSongs, item.query, item.duration);
+              if (best && best.id) {
+                const vid = best.id;
                 resolved[item.origId] = vid;
                 if (item.norm) idMapCache.set(item.norm, vid);
                 if (item.origId) idMapCache.set(item.origId, vid);
