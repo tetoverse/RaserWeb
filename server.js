@@ -65,14 +65,18 @@ function pickBestSearchResultWithMeta(results, queryTitle = '', targetDuration =
     'enstrümantal', 'acoustic', 'akustik', 'unplugged', '8d', 'mashup',
     'bootleg', 'bass boosted', 'tiktok', 'reaction', 'rehearsal', 'session',
     'festival', 'tour', '1 hour', '10 hours', 'pitched', 'loop', 'extended',
-    'parody', 'parodi', 'tribute', 'club mix', 'freestyle'
+    'parody', 'parodi', 'tribute', 'club mix', 'freestyle', 'beat', 'type beat',
+    'acapella', 'vocals only'
   ];
   const wantedVariants = variantWords.filter(w => qLower.includes(w));
+  const variantTokenSet = new Set(variantWords.flatMap(w => w.split(' ')));
 
   const { artist: wantArtistRaw, title: wantTitleRaw } = splitArtistTitle(queryTitle);
   const ignoreArtist = !wantArtistRaw || /^(various artists|unknown artist)$/i.test(wantArtistRaw);
   const artistTokens = ignoreArtist ? [] : tokenizeLoose(wantArtistRaw);
-  const titleTokens = tokenizeLoose(wantTitleRaw || queryTitle);
+  const allTitleTokens = tokenizeLoose(wantTitleRaw || queryTitle);
+  const coreTitleTokens = allTitleTokens.filter(t => !variantTokenSet.has(t));
+  const titleTokens = coreTitleTokens.length > 0 ? coreTitleTokens : allTitleTokens;
 
   let bestMeta = null;
 
@@ -121,8 +125,8 @@ function pickBestSearchResultWithMeta(results, queryTitle = '', targetDuration =
         if (rLooseStr.includes(tok)) matched++;
       }
       titleRatio = matched / titleTokens.length;
-      score += Math.round(titleRatio * 240);
-      if (titleRatio < 0.5) score -= 260;
+      score += Math.round(titleRatio * 280);
+      if (titleRatio < 0.6) score -= 260;
     }
 
     // Artist token match (prevents wrong artist cover / same-title song from winning)
