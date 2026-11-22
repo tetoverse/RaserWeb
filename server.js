@@ -2620,46 +2620,56 @@ function serializeJsonForHtmlScript(value) {
     };
 
     try {
-      const [ytmSongs, ytmAll] = await Promise.all([
+      const [ytmSongs, ytmAll, webRes] = await Promise.all([
         searchYouTubeMusic(q, true, false).catch(() => []),
-        searchYouTubeMusic(q, false, false).catch(() => [])
+        searchYouTubeMusic(q, false, false).catch(() => []),
+        searchYouTubeInnertubeWeb(q).catch(() => [])
       ]);
+
+      // Build duration map from any pool that has it (prevents 0:00 on Songs that omit duration)
+      const durMap = new Map();
+      for (const item of [...(ytmSongs || []), ...(ytmAll || []), ...(webRes || [])]) {
+        if (item && item.id && item.duration > 0 && !durMap.has(item.id)) {
+          durMap.set(item.id, item.duration);
+        }
+      }
+
+      const qTokens = tokenizeLoose(q);
+      const webFiltered = [];
+      for (const item of (webRes || [])) {
+        if (!item || !item.id || item.duration > 1200) continue; // skip >20 min mixes
+        const hay = tokenizeLoose(`${item.title || ''} ${item.artist || ''}`).join(' ');
+        const hits = qTokens.length ? qTokens.filter(tok => hay.includes(tok)).length : 0;
+        if (qTokens.length === 0 || hits / qTokens.length >= 0.6) {
+          webFiltered.push(item);
+        }
+      }
+
+      // Interleave: top YTM matches first, then top matching YouTube Web uploads (e.g. mashups like HI6gMkfRjE0), then remaining YTM
+      const ytmCombined = [];
+      const ytmSeen = new Set();
+      for (const item of [...(ytmAll || []), ...(ytmSongs || [])]) {
+        if (item && item.id && !ytmSeen.has(item.id)) {
+          ytmSeen.add(item.id);
+          ytmCombined.push(item);
+        }
+      }
+
       const merged = [];
       const seen = new Set();
-      // Preserve YouTube Music's own relevance order first (unfiltered Top Hit + Songs)
-      for (const item of [...(ytmAll || []), ...(ytmSongs || [])]) {
-        if (item && item.id && !seen.has(item.id)) {
-          seen.add(item.id);
-          merged.push(item);
+      const pushUnique = (item) => {
+        if (!item || !item.id || seen.has(item.id)) return;
+        seen.add(item.id);
+        if ((!item.duration || item.duration <= 0) && durMap.has(item.id)) {
+          item.duration = durMap.get(item.id);
         }
-      }
+        merged.push(item);
+      };
 
-      // Check if YTM already has a strong match containing most query tokens
-      const qTokens = tokenizeLoose(q);
-      const hasStrongYtmMatch = qTokens.length > 0 && merged.some((it) => {
-        const hay = tokenizeLoose(`${it.title || ''} ${it.artist || ''}`).join(' ');
-        const hits = qTokens.filter(tok => hay.includes(tok)).length;
-        return hits / qTokens.length >= 0.75;
-      });
-
-      // Only pull YouTube Web results when YTM didn't find a strong match (e.g. YouTube-only mashups/uploads)
-      if (!hasStrongYtmMatch) {
-        const webRes = await searchYouTubeInnertubeWeb(q).catch(() => []);
-        const webHits = [];
-        for (const item of (webRes || [])) {
-          if (!item || !item.id || seen.has(item.id)) continue;
-          if (item.duration > 900) continue; // skip 15+ min spam mixes
-          const hay = tokenizeLoose(`${item.title || ''} ${item.artist || ''}`).join(' ');
-          const hits = qTokens.length ? qTokens.filter(tok => hay.includes(tok)).length : 0;
-          if (qTokens.length === 0 || hits / qTokens.length >= 0.6) {
-            seen.add(item.id);
-            webHits.push({ item, ratio: qTokens.length ? hits / qTokens.length : 0 });
-          }
-        }
-        webHits.sort((a, b) => b.ratio - a.ratio);
-        // Place exact YouTube Web hits at the top, followed by YTM results
-        merged.unshift(...webHits.map(w => w.item));
-      }
+      ytmCombined.slice(0, 3).forEach(pushUnique);
+      webFiltered.slice(0, 5).forEach(pushUnique);
+      ytmCombined.slice(3).forEach(pushUnique);
+      webFiltered.slice(5).forEach(pushUnique);
 
       let results = merged;
       if (!results || results.length === 0) {
@@ -2807,7 +2817,7 @@ function serializeJsonForHtmlScript(value) {
           || '';
         const artistName = (dzArtist && artistNameMatchesQuery && dzArtist.name) || cleanName;
         const fans = (dzArtist && artistNameMatchesQuery && typeof dzArtist.nb_fan === 'number') ? dzArtist.nb_fan : 0;
-        const isKnownArtist = !!(dzArtist && artistNameMatchesQuery);
+        const isKnownArtist = !!(dzArtist && artistNameMatchesQuery && fans >= 10000);
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
