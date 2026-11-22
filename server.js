@@ -2950,6 +2950,46 @@ function serializeJsonForHtmlScript(value) {
     return;
   }
 
+  // Batch duration backfill: POST /api/resolve-durations
+  if (pathname === '/api/resolve-durations') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', '*');
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      return res.end();
+    }
+    if (req.method === 'POST') {
+      const body = await readBoundedBody(req, res);
+      if (body === null) return;
+      try {
+        const parsed = JSON.parse(body || '{}');
+        const tracks = Array.isArray(parsed.tracks) ? parsed.tracks.slice(0, 25) : [];
+        const durations = {};
+        const concurrency = 5;
+        for (let i = 0; i < tracks.length; i += concurrency) {
+          const chunk = tracks.slice(i, i + concurrency);
+          await Promise.all(chunk.map(async (t) => {
+            if (!t || !t.key) return;
+            const q = String(t.artist ? `${t.artist} - ${t.title || ''}` : (t.title || '')).trim();
+            if (!q) return;
+            try {
+              const resSongs = await searchYouTubeMusic(q);
+              const best = pickBestSearchResult(resSongs, q, 0);
+              if (best && Number.isFinite(best.duration) && best.duration > 10 && best.duration !== 180) {
+                durations[String(t.key)] = Math.round(best.duration);
+              }
+            } catch (_) {}
+          }));
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: true, durations }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: 'Invalid JSON' }));
+      }
+    }
+  }
+
   // Pre-resolve YouTube Video IDs in batch: POST /api/resolve-ids or GET /api/resolve-ids?q=...
   if (pathname === '/api/resolve-ids') {
     res.setHeader('Access-Control-Allow-Origin', '*');
