@@ -32,7 +32,30 @@ const inflightResolutions = new Map();
 const inflightFullResolutions = new Map();
 const idMapCache = new Map(); // query/id -> youtubeVideoId
 
-function pickBestSearchResult(results, queryTitle = '', targetDuration = 0) {
+function tokenizeLoose(str) {
+  if (!str || typeof str !== 'string') return [];
+  return str
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(' ')
+    .filter(t => t.length >= 2 && !/^(feat|ft|with|and|the|ve|official|audio|video|music|topic|hq|hd)$/i.test(t));
+}
+
+function splitArtistTitle(query) {
+  const raw = String(query || '').trim();
+  const dashIdx = raw.indexOf(' - ');
+  if (dashIdx > 0) {
+    return {
+      artist: raw.slice(0, dashIdx).trim(),
+      title: raw.slice(dashIdx + 3).trim()
+    };
+  }
+  return { artist: '', title: raw };
+}
+
+function pickBestSearchResultWithMeta(results, queryTitle = '', targetDuration = 0) {
   if (!Array.isArray(results) || results.length === 0) return null;
   const qLower = String(queryTitle || '').toLowerCase();
   const dur = Number(targetDuration) || 0;
@@ -42,15 +65,16 @@ function pickBestSearchResult(results, queryTitle = '', targetDuration = 0) {
     'enstrümantal', 'acoustic', 'akustik', 'unplugged', '8d', 'mashup',
     'bootleg', 'bass boosted', 'tiktok', 'reaction', 'rehearsal', 'session',
     'festival', 'tour', '1 hour', '10 hours', 'pitched', 'loop', 'extended',
-    'parody', 'parodi', 'tribute', 'club mix', 'freestyle', 'karaoke'
+    'parody', 'parodi', 'tribute', 'club mix', 'freestyle'
   ];
   const wantedVariants = variantWords.filter(w => qLower.includes(w));
-  const queryTokens = normalizeTrackKey(queryTitle)
-    .split(' ')
-    .filter(t => t.length >= 2);
 
-  let best = results[0];
-  let bestScore = -Infinity;
+  const { artist: wantArtistRaw, title: wantTitleRaw } = splitArtistTitle(queryTitle);
+  const ignoreArtist = !wantArtistRaw || /^(various artists|unknown artist)$/i.test(wantArtistRaw);
+  const artistTokens = ignoreArtist ? [] : tokenizeLoose(wantArtistRaw);
+  const titleTokens = tokenizeLoose(wantTitleRaw || queryTitle);
+
+  let bestMeta = null;
 
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
@@ -59,6 +83,7 @@ function pickBestSearchResult(results, queryTitle = '', targetDuration = 0) {
     const rTitle = String(r.title || '').toLowerCase();
     const rArtist = String(r.artist || '').toLowerCase();
     const rCombined = `${rTitle} ${rArtist}`;
+    const rLooseStr = tokenizeLoose(rCombined).join(' ');
 
     // Strong penalty for unwanted remix / live / cover / slowed / concert variants,
     // and strong bonus when the user explicitly asked for that variant
@@ -67,50 +92,103 @@ function pickBestSearchResult(results, queryTitle = '', targetDuration = 0) {
       const re = new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?:$|[^\\p{L}\\p{N}])`, 'u');
       const hasVariant = re.test(rTitle) || (w !== 'live' && w !== 'tour' && re.test(rArtist));
       if (wantedVariants.includes(w)) {
-        if (hasVariant) score += 140;
+        if (hasVariant) score += 160;
       } else if (hasVariant) {
-        score -= 250;
+        score -= 260;
       }
     }
 
     // Prefer official studio Songs over Videos
-    if (r.isSong) score += 90;
-    else if (r.isVideo) score -= 45;
-    if (/\bofficial audio\b|\bprovided to youtube\b/i.test(rCombined)) score += 35;
+    if (r.isSong) score += 75;
+    else if (r.isVideo) score -= 35;
+    if (/\bofficial audio\b|\bprovided to youtube\b/i.test(rCombined)) score += 30;
     if (/\bofficial (music )?video\b|\blyrics?\b|\bvisualizer\b/i.test(rTitle) && !qLower.includes('video')) {
-      score -= 20;
+      score -= 15;
     }
 
-    // Token match against requested artist + title
-    if (queryTokens.length > 0 && rCombined.trim().length > 0) {
-      const rNorm = normalizeTrackKey(rCombined);
+    // Title token match (keeps parenthesized words like "(with Selena Gomez)", "(Radio Edit)")
+    let titleRatio = 1;
+    if (titleTokens.length > 0 && rLooseStr.length > 0) {
       let matched = 0;
-      for (const tok of queryTokens) {
-        if (rNorm.includes(tok)) matched++;
+      for (const tok of titleTokens) {
+        if (rLooseStr.includes(tok)) matched++;
       }
-      const ratio = matched / queryTokens.length;
-      score += Math.round(ratio * 120);
-      if (ratio < 0.35) score -= 120;
+      titleRatio = matched / titleTokens.length;
+      score += Math.round(titleRatio * 140);
+      if (titleRatio < 0.5) score -= 180;
+    }
+
+    // Artist token match (prevents wrong artist cover / same-title song from winning)
+    let artistMatched = true;
+    if (artistTokens.length > 0 && rLooseStr.length > 0) {
+      let aMatched = 0;
+      for (const tok of artistTokens) {
+        if (rLooseStr.includes(tok)) aMatched++;
+      }
+      if (aMatched === 0) {
+        artistMatched = false;
+        score -= 170;
+      } else {
+        score += 65 + Math.round((aMatched / artistTokens.length) * 45);
+      }
     }
 
     // Duration match (rejects full concerts, 1-hour loops, or wrong edits)
-    if (dur > 10 && r.duration > 10) {
+    if (dur > 10 && dur !== 180 && r.duration > 10) {
       const diff = Math.abs(r.duration - dur);
-      if (diff <= 5) score += 75;
-      else if (diff <= 15) score += 45;
-      else if (diff <= 30) score += 10;
-      else score -= Math.min(180, diff * 1.5);
+      if (diff <= 5) score += 80;
+      else if (diff <= 15) score += 50;
+      else if (diff <= 30) score += 15;
+      else score -= Math.min(200, diff * 1.8);
     } else if (r.duration > 900 && dur <= 0) {
       // Without target duration, penalize >15 min mixes/concerts unless requested
-      score -= 120;
+      score -= 140;
     }
 
-    if (score > bestScore) {
-      bestScore = score;
-      best = r;
+    if (!bestMeta || score > bestMeta.score) {
+      bestMeta = { track: r, score, titleRatio, artistMatched };
     }
   }
-  return best;
+  return bestMeta;
+}
+
+function pickBestSearchResult(results, queryTitle = '', targetDuration = 0) {
+  const meta = pickBestSearchResultWithMeta(results, queryTitle, targetDuration);
+  return meta ? meta.track : null;
+}
+
+async function resolveBestTrackAcrossSources(query, targetDuration = 0) {
+  const cleanQ = String(query || '').trim();
+  if (!cleanQ) return null;
+
+  let ytmResults = [];
+  try {
+    ytmResults = await searchYouTubeMusic(cleanQ);
+  } catch (_) {}
+
+  const ytmMeta = pickBestSearchResultWithMeta(ytmResults, cleanQ, targetDuration);
+  // High-confidence studio Song match on YouTube Music -> return immediately
+  if (ytmMeta && ytmMeta.titleRatio >= 0.55 && ytmMeta.artistMatched && ytmMeta.score >= 150) {
+    return ytmMeta.track;
+  }
+
+  // Otherwise (track absent from YT Music Songs catalog, e.g. reverb/mashup/indie upload),
+  // also query YouTube Web search and score both pools together.
+  let webResults = [];
+  try {
+    webResults = await searchYouTubeInnertubeWeb(cleanQ);
+  } catch (_) {}
+
+  const merged = [];
+  const seen = new Set();
+  for (const r of [...(ytmResults || []), ...(webResults || [])]) {
+    if (r && r.id && !seen.has(r.id)) {
+      seen.add(r.id);
+      merged.push(r);
+    }
+  }
+  const combinedMeta = pickBestSearchResultWithMeta(merged, cleanQ, targetDuration);
+  return combinedMeta ? combinedMeta.track : (ytmMeta ? ytmMeta.track : null);
 }
 
 function normalizeTrackKey(str) {
@@ -119,7 +197,7 @@ function normalizeTrackKey(str) {
 }
 
 const STREAM_CACHE_FILE = path.join(__dirname, 'data', 'stream_cache.json');
-const ID_MAP_CACHE_FILE = path.join(__dirname, 'data', 'resolved_ids_v2.json');
+const ID_MAP_CACHE_FILE = path.join(__dirname, 'data', 'resolved_ids_v3.json');
 
 function loadStreamCacheFromDisk() {
   try {
@@ -509,22 +587,12 @@ function resolveFullStreamViaYtDlp(targetId, cleanTarget = '', isUrl = false) {
         resolvedVideoId = idMapCache.get(cleanTarget);
       } else if (q) {
         try {
-          const sRes = await searchYouTubeMusic(q);
-          const bestS = pickBestSearchResult(sRes, q);
+          const bestS = await resolveBestTrackAcrossSources(q, 0);
           if (bestS && bestS.id) {
             resolvedVideoId = bestS.id;
             if (norm) idMapCache.set(norm, resolvedVideoId);
             if (cleanTarget) idMapCache.set(cleanTarget, resolvedVideoId);
             saveIdCacheToDisk();
-          } else {
-            const wRes = await searchYouTubeInnertubeWeb(q);
-            const bestW = pickBestSearchResult(wRes, q);
-            if (bestW && bestW.id) {
-              resolvedVideoId = bestW.id;
-              if (norm) idMapCache.set(norm, resolvedVideoId);
-              if (cleanTarget) idMapCache.set(cleanTarget, resolvedVideoId);
-              saveIdCacheToDisk();
-            }
           }
         } catch (_) {}
       }
@@ -664,8 +732,7 @@ async function resolveAudioStreamDetails(target, platform = '', queryFallback = 
       }
       if (!targetId) {
         try {
-          const searchResults = await searchYouTubeMusic(searchQuery);
-          const bestMatch = pickBestSearchResult(searchResults, searchQuery, targetDuration);
+          const bestMatch = await resolveBestTrackAcrossSources(searchQuery, targetDuration);
           if (bestMatch && bestMatch.id) {
             targetId = bestMatch.id;
             if (norm) idMapCache.set(norm, targetId);
@@ -673,20 +740,8 @@ async function resolveAudioStreamDetails(target, platform = '', queryFallback = 
             saveIdCacheToDisk();
           }
         } catch (sErr) {
-          console.warn('[FastResolver] In-process searchYouTubeMusic note:', sErr.message);
+          console.warn('[FastResolver] resolveBestTrackAcrossSources note:', sErr.message);
         }
-      }
-      if (!targetId) {
-        try {
-          const webResults = await searchYouTubeInnertubeWeb(searchQuery);
-          const bestWeb = pickBestSearchResult(webResults, searchQuery, targetDuration);
-          if (bestWeb && bestWeb.id) {
-            targetId = bestWeb.id;
-            if (norm) idMapCache.set(norm, targetId);
-            if (cleanTarget) idMapCache.set(cleanTarget, targetId);
-            saveIdCacheToDisk();
-          }
-        } catch (_) {}
       }
     }
   }
@@ -2597,8 +2652,7 @@ function serializeJsonForHtmlScript(value) {
                 ytId = idMapCache.get(rawId);
               } else {
                 try {
-                  const sRes = await searchYouTubeMusic(q);
-                  const picked = pickBestSearchResult(sRes, title || q, targetDur);
+                  const picked = await resolveBestTrackAcrossSources(q, targetDur);
                   if (picked && picked.id) {
                     ytId = picked.id;
                     if (norm) idMapCache.set(norm, ytId);
@@ -2972,10 +3026,10 @@ function serializeJsonForHtmlScript(value) {
           await Promise.all(chunk.map(async (t) => {
             if (!t || !t.key) return;
             const q = String(t.artist ? `${t.artist} - ${t.title || ''}` : (t.title || '')).trim();
+            const targetDur = Number(t.duration) || 0;
             if (!q) return;
             try {
-              const resSongs = await searchYouTubeMusic(q);
-              const best = pickBestSearchResult(resSongs, q, 0);
+              const best = await resolveBestTrackAcrossSources(q, targetDur);
               if (best && best.id) {
                 const dur = (Number.isFinite(best.duration) && best.duration > 10 && best.duration !== 180)
                   ? Math.round(best.duration)
@@ -3047,8 +3101,7 @@ function serializeJsonForHtmlScript(value) {
           const chunk = toSearch.slice(i, i + concurrency);
           await Promise.all(chunk.map(async (item) => {
             try {
-              const resSongs = await searchYouTubeMusic(item.query);
-              const best = pickBestSearchResult(resSongs, item.query, item.duration);
+              const best = await resolveBestTrackAcrossSources(item.query, item.duration);
               if (best && best.id) {
                 const vid = best.id;
                 resolved[item.origId] = vid;
